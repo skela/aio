@@ -13,85 +13,49 @@ pub fn draw(f: &mut Frame<'_>, app: &App) {
     f.render_widget(Block::default().style(Style::default().bg(Color::Black)), area);
 
     if app.external_agents.is_empty() {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(10),
+                Constraint::Length(5),
+                Constraint::Length(1),
+            ])
+            .split(f.area());
+
+        draw_header(f, chunks[0], app);
+        draw_search(f, chunks[1], app);
         if app.preview_visible {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Min(4),
-                    Constraint::Length(5),
-                    Constraint::Percentage(50),
-                    Constraint::Length(1),
-                ])
-                .split(f.area());
-
-            draw_header(f, chunks[0], app);
-            draw_search(f, chunks[1], app);
-            draw_table(f, chunks[2], app);
-            draw_detail_panels(f, chunks[3], app);
-            draw_preview(f, chunks[4], app);
-            draw_status(f, chunks[5], app);
+            draw_preview(f, chunks[2], app);
         } else {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Min(10),
-                    Constraint::Length(5),
-                    Constraint::Length(1),
-                ])
-                .split(f.area());
-
-            draw_header(f, chunks[0], app);
-            draw_search(f, chunks[1], app);
             draw_table(f, chunks[2], app);
-            draw_detail_panels(f, chunks[3], app);
-            draw_status(f, chunks[4], app);
         }
+        draw_detail_panels(f, chunks[3], app);
+        draw_status(f, chunks[4], app);
     } else {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(8),
+                Constraint::Length(6),
+                Constraint::Length(5),
+                Constraint::Length(1),
+            ])
+            .split(f.area());
+
+        draw_header(f, chunks[0], app);
+        draw_search(f, chunks[1], app);
         if app.preview_visible {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Min(3),
-                    Constraint::Length(6),
-                    Constraint::Length(5),
-                    Constraint::Percentage(50),
-                    Constraint::Length(1),
-                ])
-                .split(f.area());
-
-            draw_header(f, chunks[0], app);
-            draw_search(f, chunks[1], app);
-            draw_table(f, chunks[2], app);
-            draw_external_agents(f, chunks[3], app);
-            draw_detail_panels(f, chunks[4], app);
-            draw_preview(f, chunks[5], app);
-            draw_status(f, chunks[6], app);
+            draw_preview(f, chunks[2], app);
         } else {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Min(8),
-                    Constraint::Length(6),
-                    Constraint::Length(5),
-                    Constraint::Length(1),
-                ])
-                .split(f.area());
-
-            draw_header(f, chunks[0], app);
-            draw_search(f, chunks[1], app);
             draw_table(f, chunks[2], app);
-            draw_external_agents(f, chunks[3], app);
-            draw_detail_panels(f, chunks[4], app);
-            draw_status(f, chunks[5], app);
         }
+        draw_external_agents(f, chunks[3], app);
+        draw_detail_panels(f, chunks[4], app);
+        draw_status(f, chunks[5], app);
     }
 }
 
