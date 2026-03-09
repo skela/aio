@@ -27,7 +27,9 @@ fn main() -> Result<()> {
     terminal.clear()?;
 
     let tick_rate = Duration::from_millis(900);
+    let preview_tick_rate = Duration::from_millis(150);
     let mut last_tick = Instant::now() - tick_rate;
+    let mut last_preview_tick = Instant::now() - preview_tick_rate;
     let mut app = App::new();
 
     let mut run_result = Ok(());
@@ -38,10 +40,17 @@ fn main() -> Result<()> {
             }
             last_tick = Instant::now();
         }
+        if app.preview_visible && last_preview_tick.elapsed() >= preview_tick_rate {
+            app.refresh_preview_only();
+            last_preview_tick = Instant::now();
+        }
 
         terminal.draw(|f| tui::draw(f, &app))?;
 
-        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+        let mut timeout = tick_rate.saturating_sub(last_tick.elapsed());
+        if app.preview_visible {
+            timeout = timeout.min(preview_tick_rate.saturating_sub(last_preview_tick.elapsed()));
+        }
         if event::poll(timeout)? && let Event::Key(key) = event::read()? {
             if let Err(err) = input::handle_key(&mut app, key) {
                 app.status = format!("action error: {err}");
@@ -50,6 +59,7 @@ fn main() -> Result<()> {
             if app.take_terminal_reinit_request() {
                 reinitialize_terminal(&mut terminal)?;
                 last_tick = Instant::now() - tick_rate;
+                last_preview_tick = Instant::now() - preview_tick_rate;
             }
         }
     }

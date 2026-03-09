@@ -360,6 +360,12 @@ impl App {
         self.preview_text.clear();
     }
 
+    pub fn refresh_preview_only(&mut self) {
+        if self.preview_visible {
+            self.refresh_preview();
+        }
+    }
+
     fn rebuild_records(&mut self) {
         self.records = self
             .all_records
@@ -394,8 +400,8 @@ impl App {
 
     fn refresh_preview(&mut self) {
         if let Some(record) = self.selected_record() {
-            self.preview_text =
-                query::capture_pane_tail(&record.pane.pane_id, 120).unwrap_or_else(|_| "".to_string());
+            self.preview_text = query::capture_pane_tail_ansi(&record.pane.pane_id, 120)
+                .unwrap_or_else(|_| "".to_string());
             return;
         }
         if let Some(ext) = self.selected_external_agent() {
