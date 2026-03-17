@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::text::{Line, Span};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
@@ -235,6 +235,21 @@ fn draw_preview(f: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         app.preview_text.clone()
     };
+    let outside_selected = app.selected_record().is_none() && app.selected_external_agent().is_some();
+    if outside_selected {
+        let line_count = text.lines().count();
+        let inner_height = area.height.saturating_sub(2) as usize;
+        let top_padding = inner_height.saturating_sub(line_count) / 2;
+        let centered_text = format!("{}{}", "\n".repeat(top_padding), text);
+        f.render_widget(
+            Paragraph::new(centered_text)
+                .alignment(Alignment::Center)
+                .block(Block::default().title("Preview").borders(Borders::ALL)),
+            area,
+        );
+        return;
+    }
+
     let lines = ansi_to_lines(&text);
     let visible_lines = area.height.saturating_sub(2) as usize;
     let total_lines = lines.len();

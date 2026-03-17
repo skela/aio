@@ -405,7 +405,11 @@ impl App {
             return;
         }
         if let Some(ext) = self.selected_external_agent() {
-            self.preview_text = format!("outside tmux process\npid={}\ncmd={}", ext.pid, ext.cmdline);
+            self.preview_text = format!(
+                "outside tmux process\npid={}\nagent={}\n\nClick Enter to adopt into a tmux session for previews",
+                ext.pid,
+                ext.agent.as_str()
+            );
             return;
         }
         self.preview_text.clear();
