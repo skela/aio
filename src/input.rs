@@ -47,6 +47,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('k') | KeyCode::Up => app.previous(),
         KeyCode::Char('f') => app.cycle_filter(),
         KeyCode::Char('s') => app.cycle_sort(),
+        KeyCode::Char('E') => app.eject_selected()?,
         KeyCode::Enter => app.jump_selected()?,
         _ => {}
     }

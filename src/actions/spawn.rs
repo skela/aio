@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
 
-use crate::models::{AgentType, ExternalAgent};
+use crate::models::{AgentRecord, AgentType, ExternalAgent};
 
 const DEFAULT_AI_SESSION: &str = "ai";
 
@@ -12,6 +12,38 @@ const DEFAULT_AI_SESSION: &str = "ai";
 pub enum SpawnResult {
     Switched { target: String },
     AttachedReturned { target: String },
+}
+
+pub fn eject_tmux_agent(record: &AgentRecord) -> Result<()> {
+    let terminal = detect_terminal().ok_or_else(|| {
+        anyhow!("no supported terminal found; set AIO_TERMINAL or install ghostty/kitty/alacritty/wezterm")
+    })?;
+    let resume_cmd = resume_command(record.agent)?;
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let command = format!(
+        "cd {} && exec {}",
+        shell_quote(&record.pane.cwd),
+        resume_cmd
+    );
+
+    let mut child = Command::new(&terminal.program);
+    child.args(&terminal.args);
+    match terminal.style {
+        TerminalStyle::DashE => {
+            child.args(["-e", &shell, "-lc", &command]);
+        }
+        TerminalStyle::DoubleDash => {
+            child.args(["--", &shell, "-lc", &command]);
+        }
+        TerminalStyle::Wezterm => {
+            child.args(["start", "--cwd", &record.pane.cwd, "--", &shell, "-lc", resume_cmd]);
+        }
+    }
+    child
+        .spawn()
+        .with_context(|| format!("failed to launch {}", terminal.program))?;
+    tmux_run(&["kill-pane", "-t", &record.pane.pane_id], "kill ejected source pane")?;
+    Ok(())
 }
 
 pub fn adopt_external_agent(agent: &ExternalAgent) -> Result<SpawnResult> {
@@ -62,6 +94,19 @@ fn resume_command(agent: AgentType) -> Result<&'static str> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum TerminalStyle {
+    DashE,
+    DoubleDash,
+    Wezterm,
+}
+
+struct TerminalCommand {
+    program: String,
+    args: Vec<String>,
+    style: TerminalStyle,
+}
+
 fn preferred_session(in_tmux: bool) -> Result<String> {
     let _ = in_tmux;
     // Always adopt into the dedicated AI session.
@@ -78,6 +123,49 @@ fn current_session() -> Result<String> {
         return Err(anyhow!("tmux display-message failed: {stderr}"));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn detect_terminal() -> Option<TerminalCommand> {
+    if let Ok(program) = env::var("AIO_TERMINAL")
+        && !program.trim().is_empty()
+    {
+        return Some(TerminalCommand {
+            program,
+            args: Vec::new(),
+            style: TerminalStyle::DashE,
+        });
+    }
+    if let Ok(program) = env::var("TERMINAL")
+        && !program.trim().is_empty()
+    {
+        return Some(TerminalCommand {
+            program,
+            args: Vec::new(),
+            style: TerminalStyle::DashE,
+        });
+    }
+
+    let candidates = [
+        ("ghostty", TerminalStyle::DashE),
+        ("kitty", TerminalStyle::DashE),
+        ("alacritty", TerminalStyle::DashE),
+        ("footclient", TerminalStyle::DashE),
+        ("foot", TerminalStyle::DashE),
+        ("wezterm", TerminalStyle::Wezterm),
+        ("gnome-terminal", TerminalStyle::DoubleDash),
+        ("x-terminal-emulator", TerminalStyle::DoubleDash),
+    ];
+
+    for (program, style) in candidates {
+        if program_exists(program) {
+            return Some(TerminalCommand {
+                program: program.to_string(),
+                args: Vec::new(),
+                style,
+            });
+        }
+    }
+    None
 }
 
 fn session_exists(session: &str) -> Result<bool> {
@@ -112,6 +200,10 @@ fn sanitize_name(name: &str) -> String {
     }
 }
 
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
 fn valid_cwd_arg(cwd: &str) -> Option<String> {
     if cwd.is_empty() || cwd == "-" {
         return None;
@@ -122,6 +214,14 @@ fn valid_cwd_arg(cwd: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn program_exists(program: &str) -> bool {
+    Command::new("which")
+        .arg(program)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 fn create_adopt_target(

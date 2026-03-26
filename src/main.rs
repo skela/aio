@@ -34,6 +34,14 @@ fn main() -> Result<()> {
 
     let mut run_result = Ok(());
     while app.running {
+        app.poll_delayed_terminal_reinit();
+
+        if app.take_terminal_reinit_request() {
+            reinitialize_terminal(&mut terminal)?;
+            last_tick = Instant::now() - tick_rate;
+            last_preview_tick = Instant::now() - preview_tick_rate;
+        }
+
         if last_tick.elapsed() >= tick_rate {
             if let Err(err) = app.refresh() {
                 app.status = format!("refresh error: {err}");
@@ -51,15 +59,22 @@ fn main() -> Result<()> {
         if app.preview_visible {
             timeout = timeout.min(preview_tick_rate.saturating_sub(last_preview_tick.elapsed()));
         }
-        if event::poll(timeout)? && let Event::Key(key) = event::read()? {
-            if let Err(err) = input::handle_key(&mut app, key) {
-                app.status = format!("action error: {err}");
-                run_result = Err(err);
-            }
-            if app.take_terminal_reinit_request() {
-                reinitialize_terminal(&mut terminal)?;
-                last_tick = Instant::now() - tick_rate;
-                last_preview_tick = Instant::now() - preview_tick_rate;
+        if let Some(delayed_reinit_timeout) = app.delayed_terminal_reinit_timeout() {
+            timeout = timeout.min(delayed_reinit_timeout);
+        }
+        if event::poll(timeout)? {
+            match event::read()? {
+                Event::Key(key) => {
+                    if let Err(err) = input::handle_key(&mut app, key) {
+                        app.status = format!("action error: {err}");
+                        run_result = Err(err);
+                    }
+                }
+                Event::Resize(_, _) => {
+                    terminal.autoresize()?;
+                    terminal.clear()?;
+                }
+                _ => {}
             }
         }
     }
@@ -76,6 +91,7 @@ fn reinitialize_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) 
     let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
     enable_raw_mode()?;
     execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    terminal.autoresize()?;
     terminal.clear()?;
     Ok(())
 }

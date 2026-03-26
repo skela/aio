@@ -95,7 +95,8 @@ pub struct App {
     pub search_query: String,
     pub preview_visible: bool,
     pub preview_text: String,
-    pub needs_terminal_reinit: bool,
+    pub pending_terminal_reinits: u8,
+    pub delayed_terminal_reinit_at: Option<Instant>,
     last_seen_by_pane: HashMap<String, Instant>,
     last_tail_sig_by_pane: HashMap<String, u64>,
     last_activity_by_pane: HashMap<String, Instant>,
@@ -103,7 +104,7 @@ pub struct App {
 
 impl App {
     fn keyboard_help() -> &'static str {
-        "q:quit  j/k or arrows:move  enter:move to tmux  /:search  p:preview  esc:hide  f:filter  s:sort  ctrl+o/a/c:set filter"
+        "q:quit  j/k or arrows:move  enter:move to tmux  E:eject to terminal  /:search  p:preview  esc:hide  f:filter  s:sort  ctrl+o/a/c:set filter"
     }
 
     pub fn new() -> Self {
@@ -122,7 +123,8 @@ impl App {
             search_query: String::new(),
             preview_visible: false,
             preview_text: String::new(),
-            needs_terminal_reinit: false,
+            pending_terminal_reinits: 0,
+            delayed_terminal_reinit_at: None,
             last_seen_by_pane: HashMap::new(),
             last_tail_sig_by_pane: HashMap::new(),
             last_activity_by_pane: HashMap::new(),
@@ -291,7 +293,7 @@ impl App {
             match spawn_result {
                 SpawnResult::Switched { target: _ } => {}
                 SpawnResult::AttachedReturned { target: _ } => {
-                    self.needs_terminal_reinit = true;
+                    self.request_terminal_reinit(Duration::from_millis(0));
                 }
             }
             return Ok(());
@@ -301,15 +303,55 @@ impl App {
         };
         let jump_result = jump::jump_to_pane(&rec.pane)?;
         if jump_result == JumpResult::AttachedReturned {
-            self.needs_terminal_reinit = true;
+            self.request_terminal_reinit(Duration::from_millis(0));
         }
         Ok(())
     }
 
+    pub fn eject_selected(&mut self) -> Result<()> {
+        let Some(rec) = self.selected_record() else {
+            self.status = "eject only works for tmux agents".to_string();
+            return Ok(());
+        };
+        let agent = rec.agent;
+        spawn::eject_tmux_agent(rec)?;
+        self.request_terminal_reinit(Duration::from_secs(1));
+        self.status = format!("ejected {} to a new terminal", agent.as_str());
+        Ok(())
+    }
+
     pub fn take_terminal_reinit_request(&mut self) -> bool {
-        let requested = self.needs_terminal_reinit;
-        self.needs_terminal_reinit = false;
-        requested
+        if self.pending_terminal_reinits > 0 {
+            self.pending_terminal_reinits -= 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn poll_delayed_terminal_reinit(&mut self) -> bool {
+        let Some(deadline) = self.delayed_terminal_reinit_at else {
+            return false;
+        };
+        if Instant::now() >= deadline {
+            self.delayed_terminal_reinit_at = None;
+            self.pending_terminal_reinits = self.pending_terminal_reinits.max(1);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn delayed_terminal_reinit_timeout(&self) -> Option<Duration> {
+        self.delayed_terminal_reinit_at
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    }
+
+    fn request_terminal_reinit(&mut self, delayed_by: Duration) {
+        self.pending_terminal_reinits = self.pending_terminal_reinits.max(2);
+        if !delayed_by.is_zero() {
+            self.delayed_terminal_reinit_at = Some(Instant::now() + delayed_by);
+        }
     }
 
     pub fn start_search(&mut self) {
