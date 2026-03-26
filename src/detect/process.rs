@@ -68,6 +68,7 @@ pub fn list_external_agents(tmux_root_pids: &[i32]) -> Vec<ExternalAgent> {
         let cwd = read_cwd(pid);
         agents.push(ExternalAgent {
             pid,
+            shell_pid: find_parent_shell(pid),
             agent,
             status: infer_external_status(&cmdline),
             cwd,
@@ -131,6 +132,50 @@ fn children_of(pid: i32) -> Vec<i32> {
     raw.split_whitespace()
         .filter_map(|p| p.parse::<i32>().ok())
         .collect()
+}
+
+fn find_parent_shell(pid: i32) -> Option<i32> {
+    let mut current = pid;
+    let mut seen = HashSet::new();
+    while seen.insert(current) {
+        let parent = parent_of(current)?;
+        if parent <= 1 {
+            return None;
+        }
+        let cmdline = read_cmdline(parent).unwrap_or_default();
+        let comm = read_comm(parent).unwrap_or_default();
+        if is_shell_process(&cmdline) || is_shell_process(&comm) {
+            return Some(parent);
+        }
+        current = parent;
+    }
+    None
+}
+
+fn parent_of(pid: i32) -> Option<i32> {
+    let path = format!("/proc/{pid}/stat");
+    let raw = fs::read_to_string(path).ok()?;
+    let rparen = raw.rfind(')')?;
+    let rest = raw.get(rparen + 2..)?;
+    let mut fields = rest.split_whitespace();
+    let _state = fields.next()?;
+    fields.next()?.parse::<i32>().ok()
+}
+
+fn read_comm(pid: i32) -> Option<String> {
+    let path = format!("/proc/{pid}/comm");
+    fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+}
+
+fn is_shell_process(cmd: &str) -> bool {
+    cmd.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/'))
+        .filter(|part| !part.is_empty())
+        .any(|part| {
+            matches!(
+                part.rsplit('/').next().unwrap_or(part),
+                "bash" | "zsh" | "fish" | "sh" | "dash" | "nu"
+            )
+        })
 }
 
 fn read_cmdline(pid: i32) -> Option<String> {

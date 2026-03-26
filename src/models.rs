@@ -84,6 +84,7 @@ pub struct AgentRecord {
 #[derive(Debug, Clone)]
 pub struct ExternalAgent {
     pub pid: i32,
+    pub shell_pid: Option<i32>,
     pub agent: AgentType,
     pub status: AgentStatus,
     pub cwd: String,

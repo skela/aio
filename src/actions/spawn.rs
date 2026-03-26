@@ -40,6 +40,7 @@ pub fn adopt_external_agent(agent: &ExternalAgent) -> Result<SpawnResult> {
     if in_tmux {
         tmux_run(&["switch-client", "-t", &target_session], "switch to adopted session")?;
         tmux_run(&["select-pane", "-t", &target], "select adopted pane")?;
+        terminate_original_agent(agent)?;
         return Ok(SpawnResult::Switched { target });
     }
 
@@ -48,6 +49,7 @@ pub fn adopt_external_agent(agent: &ExternalAgent) -> Result<SpawnResult> {
         &["attach-session", "-t", &target_session],
         "attach to adopted session",
     )?;
+    terminate_original_agent(agent)?;
     Ok(SpawnResult::AttachedReturned { target })
 }
 
@@ -272,4 +274,19 @@ fn tmux_run(args: &[&str], action: &str) -> Result<()> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(anyhow!("tmux {action} failed: {stderr}"))
     }
+}
+
+fn terminate_original_agent(agent: &ExternalAgent) -> Result<()> {
+    let pid = agent.shell_pid.unwrap_or(agent.pid);
+    let output = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .output()
+        .with_context(|| format!("failed to run kill for original agent process {pid}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "failed to terminate original agent process {pid}: {stderr}"
+        ));
+    }
+    Ok(())
 }

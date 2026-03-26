@@ -3,9 +3,13 @@ use ratatui::text::{Line, Span};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
 use ratatui::{Frame, layout::Rect};
+use std::env;
+use std::sync::LazyLock;
 
 use crate::app::{App, FocusPanel};
 use crate::models::AgentStatus;
+
+static HOME_DIR: LazyLock<Option<String>> = LazyLock::new(|| env::var("HOME").ok());
 
 pub fn draw(f: &mut Frame<'_>, app: &App) {
     let area = f.area();
@@ -105,7 +109,7 @@ fn draw_table(f: &mut Frame<'_>, area: Rect, app: &App) {
             Cell::from(status_cell(r.status)),
             Cell::from(r.pane.project_name()),
             Cell::from(r.agent.as_str()),
-            Cell::from(r.pane.cwd.clone()),
+            Cell::from(compact_home(&r.pane.cwd)),
         ])
         .style(style)
     });
@@ -145,8 +149,8 @@ fn draw_external_agents(f: &mut Frame<'_>, area: Rect, app: &App) {
             Cell::from(status_cell(p.status)),
             Cell::from(p.agent.as_str()),
             Cell::from(p.pid.to_string()),
-            Cell::from(p.cwd.clone()),
-            Cell::from(p.cmdline.clone()),
+            Cell::from(compact_home(&p.cwd)),
+            Cell::from(compact_home_in_text(&p.cmdline)),
         ])
         .style(style)
     });
@@ -182,7 +186,7 @@ fn draw_details(f: &mut Frame<'_>, area: Rect, app: &App) {
             "status={}\nagent={}\ncwd={}",
             r.status.as_str(),
             r.agent.as_str(),
-            r.pane.cwd
+            compact_home(&r.pane.cwd)
         )
     } else if let Some(p) = app.selected_external_agent() {
         format!(
@@ -190,8 +194,8 @@ fn draw_details(f: &mut Frame<'_>, area: Rect, app: &App) {
             p.status.as_str(),
             p.pid,
             p.agent.as_str(),
-            p.cwd,
-            p.cmdline
+            compact_home(&p.cwd),
+            compact_home_in_text(&p.cmdline)
         )
     } else {
         "No row selected".to_string()
@@ -487,4 +491,26 @@ fn sgr_4bit_color(value: u16, bright: bool) -> Color {
         (7, true) => Color::White,
         _ => Color::Reset,
     }
+}
+
+fn compact_home(path: &str) -> String {
+    let Some(home) = HOME_DIR.as_deref() else {
+        return path.to_string();
+    };
+    if path == home {
+        return "~".to_string();
+    }
+    if let Some(rest) = path.strip_prefix(home)
+        && (rest.is_empty() || rest.starts_with('/'))
+    {
+        return format!("~{rest}");
+    }
+    path.to_string()
+}
+
+fn compact_home_in_text(text: &str) -> String {
+    let Some(home) = HOME_DIR.as_deref() else {
+        return text.to_string();
+    };
+    text.replace(home, "~")
 }
