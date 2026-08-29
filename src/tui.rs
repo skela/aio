@@ -24,7 +24,6 @@ pub fn draw(f: &mut Frame<'_>, app: &App) {
                 Constraint::Length(1),
                 Constraint::Min(10),
                 Constraint::Length(5),
-                Constraint::Length(1),
             ])
             .split(f.area());
 
@@ -36,7 +35,6 @@ pub fn draw(f: &mut Frame<'_>, app: &App) {
             draw_table(f, chunks[2], app);
         }
         draw_detail_panels(f, chunks[3], app);
-        draw_status(f, chunks[4], app);
     } else {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -46,7 +44,6 @@ pub fn draw(f: &mut Frame<'_>, app: &App) {
                 Constraint::Min(8),
                 Constraint::Length(6),
                 Constraint::Length(5),
-                Constraint::Length(1),
             ])
             .split(f.area());
 
@@ -59,7 +56,10 @@ pub fn draw(f: &mut Frame<'_>, app: &App) {
         }
         draw_external_agents(f, chunks[3], app);
         draw_detail_panels(f, chunks[4], app);
-        draw_status(f, chunks[5], app);
+    }
+
+    if app.help_visible {
+        draw_help_overlay(f);
     }
 }
 
@@ -228,9 +228,36 @@ fn draw_tmux_details(f: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
-fn draw_status(f: &mut Frame<'_>, area: Rect, app: &App) {
-    let p = Paragraph::new(app.status.clone()).style(Style::default().fg(Color::Green));
-    f.render_widget(p, area);
+fn draw_help_overlay(f: &mut Frame<'_>) {
+    let lines = vec![
+        Line::from(Span::styled(" Keybindings ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        Line::from(vec![Span::styled("  q          ", Style::default().fg(Color::Cyan)), Span::raw("quit")]),
+        Line::from(vec![Span::styled("  j/k  ↑↓    ", Style::default().fg(Color::Cyan)), Span::raw("move selection")]),
+        Line::from(vec![Span::styled("  enter      ", Style::default().fg(Color::Cyan)), Span::raw("jump to tmux pane")]),
+        Line::from(vec![Span::styled("  E          ", Style::default().fg(Color::Cyan)), Span::raw("eject to terminal")]),
+        Line::from(vec![Span::styled("  /          ", Style::default().fg(Color::Cyan)), Span::raw("search")]),
+        Line::from(vec![Span::styled("  p          ", Style::default().fg(Color::Cyan)), Span::raw("toggle preview")]),
+        Line::from(vec![Span::styled("  f          ", Style::default().fg(Color::Cyan)), Span::raw("cycle filter")]),
+        Line::from(vec![Span::styled("  s          ", Style::default().fg(Color::Cyan)), Span::raw("cycle sort")]),
+        Line::from(vec![Span::styled("  ctrl+o/a/c ", Style::default().fg(Color::Cyan)), Span::raw("set filter: opencode/codex/claude")]),
+        Line::from(vec![Span::styled("  ?          ", Style::default().fg(Color::Cyan)), Span::raw("toggle this help")]),
+        Line::from(vec![Span::styled("  esc        ", Style::default().fg(Color::Cyan)), Span::raw("close overlays")]),
+    ];
+
+    let width = 52u16;
+    let height = lines.len() as u16 + 2;
+    let area = f.area();
+    let x = area.width.saturating_sub(width) / 2;
+    let y = area.height.saturating_sub(height) / 2;
+    let popup_area = Rect::new(x, y, width.min(area.width), height.min(area.height));
+
+    f.render_widget(Clear, popup_area);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).style(Style::default().bg(Color::Black))),
+        popup_area,
+    );
 }
 
 fn draw_preview(f: &mut Frame<'_>, area: Rect, app: &App) {

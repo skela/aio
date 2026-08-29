@@ -95,18 +95,16 @@ pub struct App {
     pub search_query: String,
     pub preview_visible: bool,
     pub preview_text: String,
+    pub help_visible: bool,
     pub pending_terminal_reinits: u8,
     pub delayed_terminal_reinit_at: Option<Instant>,
     last_seen_by_pane: HashMap<String, Instant>,
     last_tail_sig_by_pane: HashMap<String, u64>,
     last_activity_by_pane: HashMap<String, Instant>,
+    last_status_by_pane: HashMap<String, AgentStatus>,
 }
 
 impl App {
-    fn keyboard_help() -> &'static str {
-        "q:quit  j/k or arrows:move  enter:move to tmux  E:eject to terminal  /:search  p:preview  esc:hide  f:filter  s:sort  ctrl+o/a/c:set filter"
-    }
-
     pub fn new() -> Self {
         Self {
             all_records: Vec::new(),
@@ -118,16 +116,18 @@ impl App {
             filter: Filter::All,
             sort: SortKey::LastSeen,
             running: true,
-            status: Self::keyboard_help().to_string(),
+            status: String::new(),
             search_mode: false,
             search_query: String::new(),
             preview_visible: false,
             preview_text: String::new(),
+            help_visible: false,
             pending_terminal_reinits: 0,
             delayed_terminal_reinit_at: None,
             last_seen_by_pane: HashMap::new(),
             last_tail_sig_by_pane: HashMap::new(),
             last_activity_by_pane: HashMap::new(),
+            last_status_by_pane: HashMap::new(),
         }
     }
 
@@ -154,6 +154,14 @@ impl App {
             }
             let since_last_output = now.saturating_duration_since(*last_activity);
             record.status = infer_status(&record.pane, &pane_tail, since_last_output);
+            let prev_status = self
+                .last_status_by_pane
+                .insert(record.pane.pane_id.clone(), record.status);
+            if prev_status.map_or(false, |p| p != AgentStatus::WaitingInput)
+                && record.status == AgentStatus::WaitingInput
+            {
+                crate::sound::play();
+            }
             record.last_seen = *self
                 .last_seen_by_pane
                 .entry(record.pane.pane_id.clone())
@@ -170,7 +178,6 @@ impl App {
             self.refresh_preview();
         }
 
-        self.status = Self::keyboard_help().to_string();
         Ok(())
     }
 
@@ -400,6 +407,14 @@ impl App {
     pub fn hide_preview(&mut self) {
         self.preview_visible = false;
         self.preview_text.clear();
+    }
+
+    pub fn toggle_help(&mut self) {
+        self.help_visible = !self.help_visible;
+    }
+
+    pub fn hide_help(&mut self) {
+        self.help_visible = false;
     }
 
     pub fn refresh_preview_only(&mut self) {

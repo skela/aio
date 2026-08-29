@@ -40,9 +40,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
     match key.code {
         KeyCode::Char('q') => app.running = false,
+        KeyCode::Char('?') => app.toggle_help(),
         KeyCode::Char('/') => app.start_search(),
         KeyCode::Char('p') => app.toggle_preview(),
-        KeyCode::Esc => app.hide_preview(),
+        KeyCode::Esc => {
+            app.hide_preview();
+            app.hide_help();
+        }
         KeyCode::Char('j') | KeyCode::Down => app.next(),
         KeyCode::Char('k') | KeyCode::Up => app.previous(),
         KeyCode::Char('f') => app.cycle_filter(),

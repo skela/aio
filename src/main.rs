@@ -3,6 +3,7 @@ mod app;
 mod detect;
 mod input;
 mod models;
+mod sound;
 mod tmux;
 mod tui;
 
