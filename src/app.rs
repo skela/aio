@@ -153,7 +153,7 @@ impl App {
                 *last_activity = now;
             }
             let since_last_output = now.saturating_duration_since(*last_activity);
-            record.status = infer_status(&record.pane, &pane_tail, since_last_output);
+            record.status = infer_status(record.agent, &record.pane, &pane_tail, since_last_output);
             let prev_status = self
                 .last_status_by_pane
                 .insert(record.pane.pane_id.clone(), record.status);
@@ -473,13 +473,22 @@ impl App {
     }
 }
 
-fn infer_status(pane: &PaneInfo, tail: &str, since_last_output: Duration) -> AgentStatus {
+fn infer_status(
+    agent: AgentType,
+    pane: &PaneInfo,
+    tail: &str,
+    since_last_output: Duration,
+) -> AgentStatus {
     if pane.dead {
         return AgentStatus::Idle;
     }
 
     let t = tail.to_ascii_lowercase();
     let recent = take_last_lines(&t, 16);
+
+    if agent == AgentType::Opencode {
+        return infer_opencode_status(&recent, pane, since_last_output);
+    }
 
     if contains_any(
         &recent,
@@ -532,6 +541,113 @@ fn infer_status(pane: &PaneInfo, tail: &str, since_last_output: Duration) -> Age
         return AgentStatus::Thinking;
     }
 
+    if since_last_output > Duration::from_secs(45) {
+        return AgentStatus::Idle;
+    }
+
+    if pane.active && since_last_output <= Duration::from_secs(15) {
+        AgentStatus::Running
+    } else {
+        AgentStatus::Idle
+    }
+}
+
+fn infer_opencode_status(recent: &str, pane: &PaneInfo, since_last_output: Duration) -> AgentStatus {
+    // Waiting for permission approval or user input
+    if contains_any(
+        recent,
+        &[
+            "permission required",
+            "allow once",
+            "allow always",
+            "reject permission",
+            // question tool prompts
+            "enter submit",
+            "enter toggle",
+        ],
+    ) {
+        return AgentStatus::WaitingInput;
+    }
+
+    // Error states
+    if contains_any(
+        recent,
+        &[
+            "error:",
+            " failed",
+            "exception",
+            "traceback",
+            "permission denied",
+        ],
+    ) {
+        return AgentStatus::Error;
+    }
+
+    // Editing / writing files
+    if contains_any(
+        recent,
+        &[
+            // completed tool icons in lowercase
+            "\u{2190} edit",   // ← edit
+            "\u{2190} write",  // ← write
+            "\u{2190} patch",  // ← patch
+            "# wrote",
+            "# created",
+            "# deleted",
+            "# moved",
+            "patched ",
+            "updated file",
+            "apply patch",
+        ],
+    ) {
+        return AgentStatus::Editing;
+    }
+
+    // Active tool use / running
+    if contains_any(
+        recent,
+        &[
+            // shell tool running or completed
+            "$ ",
+            // pending tool states (~ prefix)
+            "~ ",
+            // read / glob / grep / fetch tool indicators
+            "\u{2192} read",    // → read
+            "\u{2731} glob",    // ✱ glob
+            "\u{2731} grep",    // ✱ grep
+            "% webfetch",
+            "% websearch",
+            // subagent / task
+            "\u{2714} ",        // ✓ task done (still counts as active session)
+            "\u{2502} ",        // │ task running
+            // startup
+            "loading plugins",
+            "finishing startup",
+            // retry banner
+            "retrying in",
+            // active model generation indicator
+            "esc  interrupt",
+            "esc  again to interrupt",
+        ],
+    ) {
+        return AgentStatus::Running;
+    }
+
+    // Thinking / reasoning
+    if contains_any(
+        recent,
+        &[
+            "thinking",
+            "thought:",
+            "analyzing",
+            "planning",
+            "reasoning",
+        ],
+    ) {
+        return AgentStatus::Thinking;
+    }
+
+    // Fallback: silence-based idle detection
     if since_last_output > Duration::from_secs(45) {
         return AgentStatus::Idle;
     }
