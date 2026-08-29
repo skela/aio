@@ -236,6 +236,7 @@ fn draw_help_overlay(f: &mut Frame<'_>) {
         Line::from(vec![Span::styled("  j/k  ↑↓    ", Style::default().fg(Color::Cyan)), Span::raw("move selection")]),
         Line::from(vec![Span::styled("  enter      ", Style::default().fg(Color::Cyan)), Span::raw("jump to tmux pane")]),
         Line::from(vec![Span::styled("  E          ", Style::default().fg(Color::Cyan)), Span::raw("eject to terminal")]),
+        Line::from(vec![Span::styled("  <spc>gg    ", Style::default().fg(Color::Cyan)), Span::raw("open lazygit in agent's cwd")]),
         Line::from(vec![Span::styled("  /          ", Style::default().fg(Color::Cyan)), Span::raw("search")]),
         Line::from(vec![Span::styled("  p          ", Style::default().fg(Color::Cyan)), Span::raw("toggle preview")]),
         Line::from(vec![Span::styled("  f          ", Style::default().fg(Color::Cyan)), Span::raw("cycle filter")]),

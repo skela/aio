@@ -6,6 +6,7 @@ use anyhow::Result;
 
 use crate::actions::jump;
 use crate::actions::jump::JumpResult;
+use crate::actions::lazygit;
 use crate::actions::spawn;
 use crate::actions::spawn::SpawnResult;
 use crate::detect::{classify, process};
@@ -98,6 +99,8 @@ pub struct App {
     pub help_visible: bool,
     pub pending_terminal_reinits: u8,
     pub delayed_terminal_reinit_at: Option<Instant>,
+    /// Tracks an in-progress multi-key sequence (e.g. `space` -> `g` -> `g`).
+    pub key_seq: Vec<char>,
     last_seen_by_pane: HashMap<String, Instant>,
     last_tail_sig_by_pane: HashMap<String, u64>,
     last_activity_by_pane: HashMap<String, Instant>,
@@ -124,6 +127,7 @@ impl App {
             help_visible: false,
             pending_terminal_reinits: 0,
             delayed_terminal_reinit_at: None,
+            key_seq: Vec::new(),
             last_seen_by_pane: HashMap::new(),
             last_tail_sig_by_pane: HashMap::new(),
             last_activity_by_pane: HashMap::new(),
@@ -324,6 +328,18 @@ impl App {
         spawn::eject_tmux_agent(rec)?;
         self.request_terminal_reinit(Duration::from_secs(1));
         self.status = format!("ejected {} to a new terminal", agent.as_str());
+        Ok(())
+    }
+
+    pub fn open_lazygit_selected(&mut self) -> Result<()> {
+        let Some(rec) = self.selected_record() else {
+            self.status = "lazygit requires a selected tmux agent".to_string();
+            return Ok(());
+        };
+        let pane = rec.pane.clone();
+        lazygit::open_lazygit(&pane)?;
+        // After switch-client returns we need to redraw the TUI.
+        self.request_terminal_reinit(Duration::from_millis(0));
         Ok(())
     }
 

@@ -38,6 +38,40 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
     }
 
+    // Handle multi-key sequences (e.g. <space>gg to open lazygit).
+    if let KeyCode::Char(c) = key.code {
+        if !key.modifiers.contains(KeyModifiers::CONTROL) {
+            let seq = app.key_seq.clone();
+            match (seq.as_slice(), c) {
+                // First key: space starts the sequence.
+                ([], ' ') => {
+                    app.key_seq.push(' ');
+                    return Ok(());
+                }
+                // Second key: <space>g — wait for the second g.
+                ([' '], 'g') => {
+                    app.key_seq.push('g');
+                    return Ok(());
+                }
+                // Third key: <space>gg — fire lazygit.
+                ([' ', 'g'], 'g') => {
+                    app.key_seq.clear();
+                    app.open_lazygit_selected()?;
+                    return Ok(());
+                }
+                // Any other key after a partial sequence: clear and fall through.
+                _ if !seq.is_empty() => {
+                    app.key_seq.clear();
+                    // Fall through so the key still fires its normal binding.
+                }
+                _ => {}
+            }
+        }
+    } else if !app.key_seq.is_empty() {
+        // Non-char key (e.g. Esc, Enter) cancels any pending sequence.
+        app.key_seq.clear();
+    }
+
     match key.code {
         KeyCode::Char('q') => app.running = false,
         KeyCode::Char('?') => app.toggle_help(),
