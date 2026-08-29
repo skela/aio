@@ -105,6 +105,10 @@ pub struct App {
     last_tail_sig_by_pane: HashMap<String, u64>,
     last_activity_by_pane: HashMap<String, Instant>,
     last_status_by_pane: HashMap<String, AgentStatus>,
+    /// Tracks when a pane most recently entered an active status
+    /// (Thinking/Editing/Running). Used to gate the "done" sound so we
+    /// don't fire on transient one-tick blips.
+    last_became_active_by_pane: HashMap<String, Instant>,
 }
 
 impl App {
@@ -132,6 +136,7 @@ impl App {
             last_tail_sig_by_pane: HashMap::new(),
             last_activity_by_pane: HashMap::new(),
             last_status_by_pane: HashMap::new(),
+            last_became_active_by_pane: HashMap::new(),
         }
     }
 
@@ -161,10 +166,37 @@ impl App {
             let prev_status = self
                 .last_status_by_pane
                 .insert(record.pane.pane_id.clone(), record.status);
+
+            let is_active = matches!(
+                record.status,
+                AgentStatus::Thinking | AgentStatus::Editing | AgentStatus::Running
+            );
+            let was_active = prev_status.map_or(false, |p| {
+                matches!(p, AgentStatus::Thinking | AgentStatus::Editing | AgentStatus::Running)
+            });
+
+            // Track when this pane first became continuously active.
+            if is_active && !was_active {
+                self.last_became_active_by_pane.insert(record.pane.pane_id.clone(), now);
+            } else if !is_active {
+                // Clear when no longer active so a future burst starts fresh.
+                self.last_became_active_by_pane.remove(&record.pane.pane_id);
+            }
+
+            // Sound: WaitingInput — agent needs attention.
             if prev_status.map_or(false, |p| p != AgentStatus::WaitingInput)
                 && record.status == AgentStatus::WaitingInput
             {
                 crate::sound::play();
+            }
+            // Sound: done — agent was active for at least 10s and just went idle.
+            // The 10s floor prevents blips from transient keyword matches.
+            if was_active && record.status == AgentStatus::Idle {
+                let active_since = self.last_became_active_by_pane.get(&record.pane.pane_id);
+                let active_duration = active_since.map_or(Duration::ZERO, |t| now.saturating_duration_since(*t));
+                if active_duration >= Duration::from_secs(10) {
+                    crate::sound::play();
+                }
             }
             record.last_seen = *self
                 .last_seen_by_pane
