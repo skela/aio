@@ -600,7 +600,7 @@ fn infer_status(
     }
 }
 
-fn infer_opencode_status(recent: &str, pane: &PaneInfo, since_last_output: Duration) -> AgentStatus {
+fn infer_opencode_status(recent: &str, _pane: &PaneInfo, _since_last_output: Duration) -> AgentStatus {
     // Waiting for permission approval or user input
     if contains_any(
         recent,
@@ -655,27 +655,22 @@ fn infer_opencode_status(recent: &str, pane: &PaneInfo, since_last_output: Durat
     if contains_any(
         recent,
         &[
-            // shell tool running or completed
-            "$ ",
-            // pending tool states (~ prefix)
-            "~ ",
-            // read / glob / grep / fetch tool indicators
+            // active model generation indicator (most reliable signal)
+            "esc  interrupt",
+            "esc  again to interrupt",
+            // read / glob / grep / fetch tool indicators (arrow prefix = in-progress)
             "\u{2192} read",    // → read
             "\u{2731} glob",    // ✱ glob
             "\u{2731} grep",    // ✱ grep
             "% webfetch",
             "% websearch",
-            // subagent / task
-            "\u{2714} ",        // ✓ task done (still counts as active session)
+            // subagent / task actively running
             "\u{2502} ",        // │ task running
             // startup
             "loading plugins",
             "finishing startup",
             // retry banner
             "retrying in",
-            // active model generation indicator
-            "esc  interrupt",
-            "esc  again to interrupt",
         ],
     ) {
         return AgentStatus::Running;
@@ -696,15 +691,8 @@ fn infer_opencode_status(recent: &str, pane: &PaneInfo, since_last_output: Durat
     }
 
     // Fallback: silence-based idle detection
-    if since_last_output > Duration::from_secs(45) {
-        return AgentStatus::Idle;
-    }
-
-    if pane.active && since_last_output <= Duration::from_secs(15) {
-        AgentStatus::Running
-    } else {
-        AgentStatus::Idle
-    }
+    // No pane.active heuristic — opencode has precise enough keyword signals
+    AgentStatus::Idle
 }
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
