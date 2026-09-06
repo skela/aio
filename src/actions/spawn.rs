@@ -85,6 +85,55 @@ pub fn adopt_external_agent(agent: &ExternalAgent) -> Result<SpawnResult> {
     Ok(SpawnResult::AttachedReturned { target })
 }
 
+/// Creates a new window running `opencode` inside the same tmux session that
+/// `aio` itself is running in, and switches the client's focus to it.
+/// Requires `aio` to be running inside tmux (there's no "current session"
+/// otherwise).
+pub fn create_named_window(window_name: &str, cwd: Option<&str>) -> Result<SpawnResult> {
+    let window_name = sanitize_target_name(window_name);
+    if window_name.is_empty() {
+        return Err(anyhow!("window name cannot be empty"));
+    }
+
+    if env::var("TMUX").is_err() {
+        return Err(anyhow!(
+            "aio must be running inside tmux to create a window in the current session"
+        ));
+    }
+
+    let session = current_session()?;
+    let target_window = format!("{session}:{}", next_window_index(&session)?);
+    let cwd = cwd.and_then(valid_cwd_arg);
+
+    // Deliberately no `-d`: creating the window in the foreground makes tmux
+    // switch the client's active window to it immediately.
+    let mut args = vec![
+        "new-window".to_string(),
+        "-P".to_string(),
+        "-F".to_string(),
+        "#{session_name}:#{window_index}.#{pane_index}".to_string(),
+        "-t".to_string(),
+        target_window,
+        "-n".to_string(),
+        window_name,
+    ];
+    if let Some(dir) = &cwd {
+        args.push("-c".to_string());
+        args.push(dir.clone());
+    }
+    args.push("opencode".to_string());
+
+    let target = tmux_capture_owned(&args, "create new window")?;
+    Ok(SpawnResult::Switched { target })
+}
+
+fn sanitize_target_name(name: &str) -> String {
+    name.trim()
+        .chars()
+        .map(|c| if c == ':' || c == '.' { '_' } else { c })
+        .collect()
+}
+
 fn resume_command(agent: AgentType) -> Result<&'static str> {
     match agent {
         AgentType::Claude => Ok("claude --continue"),

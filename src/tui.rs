@@ -61,15 +61,29 @@ pub fn draw(f: &mut Frame<'_>, app: &App) {
     if app.help_visible {
         draw_help_overlay(f);
     }
+
+    if app.new_session_mode {
+        draw_new_session_prompt(f, app);
+    }
 }
 
 fn draw_header(f: &mut Frame<'_>, area: Rect, app: &App) {
-    let text = format!(
-        "agenttop | filter={} sort={} records={}",
-        app.filter.label(),
-        app.sort.label(),
-        app.records.len()
-    );
+    let text = if app.status.is_empty() {
+        format!(
+            "agenttop | filter={} sort={} records={}",
+            app.filter.label(),
+            app.sort.label(),
+            app.records.len()
+        )
+    } else {
+        format!(
+            "agenttop | filter={} sort={} records={} | {}",
+            app.filter.label(),
+            app.sort.label(),
+            app.records.len(),
+            app.status
+        )
+    };
     let p = Paragraph::new(text).style(Style::default().fg(Color::Cyan));
     f.render_widget(p, area);
 }
@@ -93,6 +107,7 @@ fn draw_search(f: &mut Frame<'_>, area: Rect, app: &App) {
 fn draw_table(f: &mut Frame<'_>, area: Rect, app: &App) {
     let header = Row::new(vec![
         Cell::from("Status"),
+        Cell::from("Name"),
         Cell::from("Project"),
         Cell::from("Agent"),
         Cell::from("CWD"),
@@ -107,6 +122,7 @@ fn draw_table(f: &mut Frame<'_>, area: Rect, app: &App) {
         };
         Row::new(vec![
             Cell::from(status_cell(r.status)),
+            Cell::from(r.pane.window_name.clone()),
             Cell::from(r.pane.project_name()),
             Cell::from(r.agent.as_str()),
             Cell::from(compact_home(&r.pane.cwd)),
@@ -117,6 +133,7 @@ fn draw_table(f: &mut Frame<'_>, area: Rect, app: &App) {
     let table = Table::new(
         rows,
         [
+            Constraint::Length(16),
             Constraint::Length(16),
             Constraint::Length(16),
             Constraint::Length(10),
@@ -237,6 +254,7 @@ fn draw_help_overlay(f: &mut Frame<'_>) {
         Line::from(vec![Span::styled("  enter      ", Style::default().fg(Color::Cyan)), Span::raw("jump to tmux pane")]),
         Line::from(vec![Span::styled("  E          ", Style::default().fg(Color::Cyan)), Span::raw("eject to terminal")]),
         Line::from(vec![Span::styled("  <spc>gg    ", Style::default().fg(Color::Cyan)), Span::raw("open lazygit in agent's cwd")]),
+        Line::from(vec![Span::styled("  c / n     ", Style::default().fg(Color::Cyan)), Span::raw("create new window (opencode) in this tmux session")]),
         Line::from(vec![Span::styled("  /          ", Style::default().fg(Color::Cyan)), Span::raw("search")]),
         Line::from(vec![Span::styled("  p          ", Style::default().fg(Color::Cyan)), Span::raw("toggle preview")]),
         Line::from(vec![Span::styled("  f          ", Style::default().fg(Color::Cyan)), Span::raw("cycle filter")]),
@@ -257,6 +275,45 @@ fn draw_help_overlay(f: &mut Frame<'_>) {
     f.render_widget(
         Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).style(Style::default().bg(Color::Black))),
+        popup_area,
+    );
+}
+
+fn draw_new_session_prompt(f: &mut Frame<'_>, app: &App) {
+    let lines = vec![
+        Line::from(Span::styled(
+            " New opencode window ",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("name: "),
+            Span::styled(
+                format!("{}_", app.new_session_name),
+                Style::default().fg(Color::LightYellow),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "enter=create  esc=cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    let width = 46u16;
+    let height = lines.len() as u16 + 2;
+    let area = f.area();
+    let x = area.width.saturating_sub(width) / 2;
+    let y = area.height.saturating_sub(height) / 2;
+    let popup_area = Rect::new(x, y, width.min(area.width), height.min(area.height));
+
+    f.render_widget(Clear, popup_area);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().bg(Color::Black)),
+        ),
         popup_area,
     );
 }

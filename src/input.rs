@@ -4,6 +4,19 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::{App, Filter};
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if app.new_session_mode {
+        match key.code {
+            KeyCode::Esc => app.cancel_new_session_prompt(),
+            KeyCode::Enter => app.submit_new_session()?,
+            KeyCode::Backspace => app.pop_new_session_char(),
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.push_new_session_char(c)
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     if app.search_mode {
         match key.code {
             KeyCode::Esc => {
@@ -86,6 +99,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('f') => app.cycle_filter(),
         KeyCode::Char('s') => app.cycle_sort(),
         KeyCode::Char('E') => app.eject_selected()?,
+        KeyCode::Char('c') | KeyCode::Char('n') => app.start_new_session_prompt(),
         KeyCode::Enter => app.jump_selected()?,
         _ => {}
     }

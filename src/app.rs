@@ -94,6 +94,8 @@ pub struct App {
     pub status: String,
     pub search_mode: bool,
     pub search_query: String,
+    pub new_session_mode: bool,
+    pub new_session_name: String,
     pub preview_visible: bool,
     pub preview_text: String,
     pub help_visible: bool,
@@ -126,6 +128,8 @@ impl App {
             status: String::new(),
             search_mode: false,
             search_query: String::new(),
+            new_session_mode: false,
+            new_session_name: String::new(),
             preview_visible: false,
             preview_text: String::new(),
             help_visible: false,
@@ -443,6 +447,56 @@ impl App {
         }
     }
 
+    pub fn start_new_session_prompt(&mut self) {
+        self.new_session_mode = true;
+        self.new_session_name.clear();
+    }
+
+    pub fn cancel_new_session_prompt(&mut self) {
+        self.new_session_mode = false;
+        self.new_session_name.clear();
+    }
+
+    pub fn push_new_session_char(&mut self, c: char) {
+        self.new_session_name.push(c);
+    }
+
+    pub fn pop_new_session_char(&mut self) {
+        self.new_session_name.pop();
+    }
+
+    pub fn submit_new_session(&mut self) -> Result<()> {
+        let name = self.new_session_name.trim().to_string();
+        if name.is_empty() {
+            self.status = "window name cannot be empty".to_string();
+            return Ok(());
+        }
+
+        let cwd = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.to_str().map(|s| s.to_string()));
+
+        match spawn::create_named_window(&name, cwd.as_deref()) {
+            Ok(SpawnResult::Switched { target: _ }) => {
+                self.new_session_mode = false;
+                self.new_session_name.clear();
+                self.status = format!("created window '{name}'");
+            }
+            Ok(SpawnResult::AttachedReturned { target: _ }) => {
+                self.new_session_mode = false;
+                self.new_session_name.clear();
+                self.status = format!("created window '{name}'");
+                self.request_terminal_reinit(Duration::from_millis(0));
+            }
+            Err(err) => {
+                // Keep the prompt open with the typed name so the user can
+                // edit and retry (e.g. when not running inside tmux).
+                self.status = format!("{err}");
+            }
+        }
+        Ok(())
+    }
+
     pub fn toggle_preview(&mut self) {
         self.preview_visible = !self.preview_visible;
         if self.preview_visible {
@@ -532,7 +586,10 @@ fn infer_status(
     }
 
     let t = tail.to_ascii_lowercase();
-    let recent = take_last_lines(&t, 16);
+    // Collapse runs of spaces before keyword matching: agent CLIs pad their
+    // status footers with variable amounts of whitespace (icons, progress
+    // bars, column alignment), so literal multi-space keywords are brittle.
+    let recent = collapse_spaces(&take_last_lines(&t, 16));
 
     if agent == AgentType::Opencode {
         return infer_opencode_status(&recent, pane, since_last_output);
@@ -656,8 +713,8 @@ fn infer_opencode_status(recent: &str, _pane: &PaneInfo, _since_last_output: Dur
         recent,
         &[
             // active model generation indicator (most reliable signal)
-            "esc  interrupt",
-            "esc  again to interrupt",
+            "esc interrupt",
+            "esc again to interrupt",
             // read / glob / grep / fetch tool indicators (arrow prefix = in-progress)
             "\u{2192} read",    // → read
             "\u{2731} glob",    // ✱ glob
@@ -707,6 +764,27 @@ fn take_last_lines(s: &str, count: usize) -> String {
     lines.join("\n")
 }
 
+/// Collapses runs of the ASCII space character into a single space, leaving
+/// newlines and other whitespace untouched. Terminal UIs pad status text
+/// with an unpredictable number of spaces (icons, progress bars, right-hand
+/// alignment), so keyword matches should not depend on exact spacing.
+fn collapse_spaces(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_was_space = false;
+    for c in s.chars() {
+        if c == ' ' {
+            if !last_was_space {
+                out.push(' ');
+            }
+            last_was_space = true;
+        } else {
+            out.push(c);
+            last_was_space = false;
+        }
+    }
+    out
+}
+
 fn tail_signature(tail: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     tail.hash(&mut hasher);
@@ -753,4 +831,53 @@ fn fuzzy_subsequence_match(haystack: &str, needle: &str) -> bool {
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_pane() -> PaneInfo {
+        PaneInfo {
+            pane_id: "%1".to_string(),
+            session: "s".to_string(),
+            window_index: 1,
+            window_name: "w".to_string(),
+            pane_index: 1,
+            pid: 1,
+            current_cmd: "opencode".to_string(),
+            cwd: "/tmp".to_string(),
+            title: String::new(),
+            active: true,
+            dead: false,
+            start_cmd: "opencode".to_string(),
+        }
+    }
+
+    #[test]
+    fn opencode_active_generation_is_running_not_idle() {
+        // Real footer captured from a live pane while opencode was actively
+        // generating (progress icons + variable padding before "esc
+        // interrupt"). This previously misclassified as Idle because the
+        // keyword literal had two spaces ("esc  interrupt") while the real
+        // UI only ever emits one.
+        let tail = "some earlier tool output\n\
+             \u{2b1b}\u{2b1b}\u{2b1b}\u{22c5}\u{22c5}  esc interrupt          139.6K (14%) \u{b7} $2.55  ctrl+p commands\n";
+        let status = infer_status(AgentType::Opencode, &dummy_pane(), tail, Duration::from_secs(1));
+        assert_eq!(status, AgentStatus::Running);
+    }
+
+    #[test]
+    fn opencode_thinking_keyword_still_matches() {
+        let tail = "thinking about the best approach\n";
+        let status = infer_status(AgentType::Opencode, &dummy_pane(), tail, Duration::from_secs(1));
+        assert_eq!(status, AgentStatus::Thinking);
+    }
+
+    #[test]
+    fn collapse_spaces_preserves_newlines_and_collapses_runs() {
+        assert_eq!(collapse_spaces("a   b\n\nc    d"), "a b\n\nc d");
+        assert_eq!(collapse_spaces("no extra spaces"), "no extra spaces");
+        assert_eq!(collapse_spaces(""), "");
+    }
 }

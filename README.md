@@ -23,7 +23,7 @@ It is built for tmux-heavy usage and gives you an `htop`-style overview of:
 ## Current UI
 
 - **Agents** table (main)
-  - Columns: `Status`, `Project`, `Agent`, `CWD`
+  - Columns: `Status`, `Name` (tmux window name), `Project`, `Agent`, `CWD`
 - **Outside tmux** table (conditional)
   - Shown only when outside agents exist
 - **Details** and **Tmux Details** panels
@@ -46,6 +46,11 @@ It is built for tmux-heavy usage and gives you an `htop`-style overview of:
 - `Ctrl+O`: set filter `opencode`
 - `Ctrl+A`: set filter `codex`
 - `Ctrl+C`: set filter `claude`
+- `c` / `n`: create a new window running `opencode` in this tmux session
+  - prompts for a window name
+  - `Enter`: create the window and jump to it
+  - `Esc`: cancel
+  - requires `aio` to be running inside tmux; if not, an error is shown and the prompt stays open
 - `p`: toggle preview panel
 - `Esc` (outside search mode): hide preview
 
@@ -56,6 +61,8 @@ When adopting an outside-tmux agent, `aio` starts a new tmux window and runs:
 - Claude: `claude --continue`
 - Codex: `codex resume --last`
 - OpenCode: `opencode --continue`
+
+A window created with `c` / `n` just runs `opencode` directly (there's no prior session to resume), inside the same tmux session `aio` is running in.
 
 ## Build and Run
 
