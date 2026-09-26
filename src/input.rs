@@ -7,11 +7,25 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if app.new_session_mode {
         match key.code {
             KeyCode::Esc => app.cancel_new_session_prompt(),
-            KeyCode::Enter => app.submit_new_session()?,
+            KeyCode::Enter => app.confirm_new_session_field()?,
+            KeyCode::Tab => app.tab_new_session_field(),
+            KeyCode::BackTab | KeyCode::Up | KeyCode::Down => app.toggle_new_session_field(),
             KeyCode::Backspace => app.pop_new_session_char(),
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.push_new_session_char(c)
             }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    if app.closed_visible {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('r') | KeyCode::Char('q') => app.hide_closed_sessions(),
+            KeyCode::Char('j') | KeyCode::Down => app.closed_next(),
+            KeyCode::Char('k') | KeyCode::Up => app.closed_previous(),
+            KeyCode::Char('d') | KeyCode::Delete => app.forget_selected_closed(),
+            KeyCode::Enter => app.reopen_selected_closed()?,
             _ => {}
         }
         return Ok(());
@@ -102,6 +116,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('T') => app.test_sound(false),
         KeyCode::Char('E') => app.eject_selected()?,
         KeyCode::Char('c') | KeyCode::Char('n') => app.start_new_session_prompt(),
+        KeyCode::Char('r') => app.toggle_closed_sessions(),
         KeyCode::Enter => app.jump_selected()?,
         _ => {}
     }

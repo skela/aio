@@ -47,10 +47,17 @@ It is built for tmux-heavy usage and gives you an `htop`-style overview of:
 - `Ctrl+A`: set filter `codex`
 - `Ctrl+C`: set filter `claude`
 - `c` / `n`: create a new window running `opencode` in this tmux session
-  - prompts for a window name
-  - `Enter`: create the window and jump to it
+  - prompts for a window name and a starting path (defaults to `~/`; `~` is expanded)
+  - `Tab`: on name, move to path; on path, complete the directory (shell-style — unique matches get a trailing `/`, multiple matches extend to the common prefix and are listed; dot-dirs only shown when you type `.`)
+  - `Shift+Tab` / `↑` / `↓`: switch between the name and path fields
+  - `Enter`: on name, move to path; on path, create the window and jump to it
   - `Esc`: cancel
   - requires `aio` to be running inside tmux; if not, an error is shown and the prompt stays open
+- `r`: show recently closed agent sessions
+  - `j` / `k` or arrow keys: move selection
+  - `Enter`: reopen in the original tmux session (recreated if gone) with the original window name and cwd, then jump to it
+  - `d` / `Delete`: forget the selected entry
+  - `Esc` / `r` / `q`: close the list
 - `p`: toggle preview panel
 - `t` / `T`: test the input-needed / done sound
 - `Esc` (outside search mode): hide preview
@@ -64,6 +71,28 @@ When adopting an outside-tmux agent, `aio` starts a new tmux window and runs:
 - OpenCode: `opencode --continue`
 
 A window created with `c` / `n` just runs `opencode` directly (there's no prior session to resume), inside the same tmux session `aio` is running in.
+
+## Recently Closed Sessions
+
+While `aio` is running it remembers tmux agent panes that go away — either the
+pane/window was closed, or the agent exited and the pane dropped back to a
+shell. Panes `aio` closes itself (eject) are not recorded. The list keeps the
+50 most recent entries (newest first, one per agent+cwd+title) and is stored in
+`$XDG_STATE_HOME/aio/closed_sessions.json` (default
+`~/.local/state/aio/closed_sessions.json`), so it survives restarts.
+
+Reopening runs:
+
+- OpenCode: `opencode --session <id>` — the id is found by matching the pane
+  title opencode sets (`OC | <session title>`) and the cwd against
+  `opencode session list`. Falls back to `opencode --continue` when no unique
+  match exists (e.g. the session was never titled).
+- Claude: `claude --continue`
+- Codex: `codex resume --last`
+
+Limitations: closes that happen while `aio` isn't running are not seen, and
+Claude/Codex resume the most recent conversation in that directory, which may
+not be the one that was closed if several ran in the same cwd.
 
 ## Build and Run
 

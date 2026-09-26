@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
@@ -10,6 +10,7 @@ use crate::actions::lazygit;
 use crate::actions::spawn;
 use crate::actions::spawn::SpawnResult;
 use crate::detect::{classify, process};
+use crate::history::{self, ClosedSession};
 use crate::models::{AgentRecord, AgentStatus, AgentType, ExternalAgent, PaneInfo};
 use crate::tmux::query;
 
@@ -76,6 +77,12 @@ impl SortKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewSessionField {
+    Name,
+    Path,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPanel {
     Tmux,
     Outside,
@@ -96,6 +103,10 @@ pub struct App {
     pub search_query: String,
     pub new_session_mode: bool,
     pub new_session_name: String,
+    pub new_session_path: String,
+    pub new_session_field: NewSessionField,
+    /// Directory candidates shown under the path field after an ambiguous Tab.
+    pub new_session_completions: Vec<String>,
     pub preview_visible: bool,
     pub preview_text: String,
     pub help_visible: bool,
@@ -103,6 +114,16 @@ pub struct App {
     pub delayed_terminal_reinit_at: Option<Instant>,
     /// Tracks an in-progress multi-key sequence (e.g. `space` -> `g` -> `g`).
     pub key_seq: Vec<char>,
+    /// Recently closed tmux agent sessions, newest first (persisted).
+    pub closed_sessions: Vec<ClosedSession>,
+    pub closed_visible: bool,
+    pub closed_selected: usize,
+    /// Last known agent record per pane, used to notice when an agent goes
+    /// away.  Kept while the pane is briefly unclassifiable so a transient
+    /// Unknown tick doesn't lose the pane.
+    tracked_agents: HashMap<String, AgentRecord>,
+    /// Panes aio closed on purpose (eject) — not recorded as "closed".
+    suppress_close: HashSet<String>,
     last_seen_by_pane: HashMap<String, Instant>,
     last_tail_sig_by_pane: HashMap<String, u64>,
     last_activity_by_pane: HashMap<String, Instant>,
@@ -130,12 +151,20 @@ impl App {
             search_query: String::new(),
             new_session_mode: false,
             new_session_name: String::new(),
+            new_session_path: String::new(),
+            new_session_field: NewSessionField::Name,
+            new_session_completions: Vec::new(),
             preview_visible: false,
             preview_text: String::new(),
             help_visible: false,
             pending_terminal_reinits: 0,
             delayed_terminal_reinit_at: None,
             key_seq: Vec::new(),
+            closed_sessions: history::load(),
+            closed_visible: false,
+            closed_selected: 0,
+            tracked_agents: HashMap::new(),
+            suppress_close: HashSet::new(),
             last_seen_by_pane: HashMap::new(),
             last_tail_sig_by_pane: HashMap::new(),
             last_activity_by_pane: HashMap::new(),
@@ -211,6 +240,7 @@ impl App {
             new_records.push(record);
         }
 
+        self.track_closed_agents(&new_records);
         self.all_records = new_records;
         self.external_agents = process::list_external_agents(&pane_pids);
         self.rebuild_records();
@@ -363,9 +393,119 @@ impl App {
             return Ok(());
         };
         let agent = rec.agent;
+        let pane_id = rec.pane.pane_id.clone();
         spawn::eject_tmux_agent(rec)?;
+        self.suppress_close.insert(pane_id);
         self.request_terminal_reinit(Duration::from_secs(1));
         self.status = format!("ejected {} to a new terminal", agent.as_str());
+        Ok(())
+    }
+
+    /// Compares this tick's panes with the last known agent panes and records
+    /// any agent whose pane disappeared, or whose pane dropped back to a
+    /// plain shell (agent quit), as a closed session.
+    fn track_closed_agents(&mut self, new_records: &[AgentRecord]) {
+        let by_id: HashMap<&str, &AgentRecord> = new_records
+            .iter()
+            .map(|r| (r.pane.pane_id.as_str(), r))
+            .collect();
+
+        let mut closed = Vec::new();
+        self.tracked_agents.retain(|pane_id, prev| {
+            let gone = match by_id.get(pane_id.as_str()) {
+                None => true,
+                Some(now) => now.agent == AgentType::Unknown && is_shell(&now.pane.current_cmd),
+            };
+            if gone {
+                closed.push(prev.clone());
+            }
+            !gone
+        });
+
+        for rec in new_records {
+            if rec.agent != AgentType::Unknown {
+                self.tracked_agents.insert(rec.pane.pane_id.clone(), rec.clone());
+            }
+        }
+
+        let mut changed = false;
+        for rec in closed {
+            if self.suppress_close.remove(&rec.pane.pane_id) {
+                continue;
+            }
+            history::push(
+                &mut self.closed_sessions,
+                ClosedSession {
+                    agent: rec.agent.as_str().to_string(),
+                    tmux_session: rec.pane.session.clone(),
+                    window_name: rec.pane.window_name.clone(),
+                    cwd: rec.pane.cwd.clone(),
+                    title: rec.pane.title.clone(),
+                    closed_at: history::now_secs(),
+                },
+            );
+            changed = true;
+        }
+        if changed {
+            history::save(&self.closed_sessions);
+            self.fix_closed_selection();
+        }
+    }
+
+    pub fn toggle_closed_sessions(&mut self) {
+        self.closed_visible = !self.closed_visible;
+        self.closed_selected = 0;
+    }
+
+    pub fn hide_closed_sessions(&mut self) {
+        self.closed_visible = false;
+    }
+
+    pub fn closed_next(&mut self) {
+        if self.closed_selected + 1 < self.closed_sessions.len() {
+            self.closed_selected += 1;
+        }
+    }
+
+    pub fn closed_previous(&mut self) {
+        self.closed_selected = self.closed_selected.saturating_sub(1);
+    }
+
+    fn fix_closed_selection(&mut self) {
+        if self.closed_selected >= self.closed_sessions.len() {
+            self.closed_selected = self.closed_sessions.len().saturating_sub(1);
+        }
+    }
+
+    pub fn forget_selected_closed(&mut self) {
+        if self.closed_selected < self.closed_sessions.len() {
+            self.closed_sessions.remove(self.closed_selected);
+            history::save(&self.closed_sessions);
+            self.fix_closed_selection();
+        }
+    }
+
+    pub fn reopen_selected_closed(&mut self) -> Result<()> {
+        let Some(entry) = self.closed_sessions.get(self.closed_selected).cloned() else {
+            return Ok(());
+        };
+        let Some(cmd) = history::resume_command(&entry) else {
+            self.status = "cannot reopen unknown agent".to_string();
+            return Ok(());
+        };
+        match spawn::reopen_window(&entry.tmux_session, &entry.window_name, &entry.cwd, &cmd) {
+            Ok(result) => {
+                self.closed_sessions.remove(self.closed_selected);
+                history::save(&self.closed_sessions);
+                self.fix_closed_selection();
+                self.closed_visible = false;
+                self.status = format!("reopened '{}' ({cmd})", entry.window_name);
+                if matches!(result, SpawnResult::AttachedReturned { .. }) {
+                    self.request_terminal_reinit(Duration::from_millis(0));
+                }
+            }
+            Err(err) => self.status = format!("{err}"),
+        }
         Ok(())
     }
 
@@ -452,42 +592,103 @@ impl App {
     pub fn start_new_session_prompt(&mut self) {
         self.new_session_mode = true;
         self.new_session_name.clear();
+        self.new_session_path = "~/".to_string();
+        self.new_session_field = NewSessionField::Name;
+        self.new_session_completions.clear();
     }
 
     pub fn cancel_new_session_prompt(&mut self) {
         self.new_session_mode = false;
         self.new_session_name.clear();
+        self.new_session_path.clear();
+        self.new_session_field = NewSessionField::Name;
+        self.new_session_completions.clear();
+    }
+
+    pub fn toggle_new_session_field(&mut self) {
+        self.new_session_completions.clear();
+        self.new_session_field = match self.new_session_field {
+            NewSessionField::Name => NewSessionField::Path,
+            NewSessionField::Path => NewSessionField::Name,
+        };
+    }
+
+    /// Tab: on the name field, move to the path field; on the path field,
+    /// complete the directory name (shell-style).
+    pub fn tab_new_session_field(&mut self) {
+        match self.new_session_field {
+            NewSessionField::Name => self.toggle_new_session_field(),
+            NewSessionField::Path => self.complete_new_session_path(),
+        }
+    }
+
+    fn complete_new_session_path(&mut self) {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let completion = complete_dir_path(&self.new_session_path, &home);
+        self.new_session_path = completion.input;
+        self.new_session_completions = if completion.candidates.len() > 1 {
+            completion.candidates
+        } else {
+            Vec::new()
+        };
+        if completion.no_match {
+            self.status = "no matching directories".to_string();
+        }
     }
 
     pub fn push_new_session_char(&mut self, c: char) {
-        self.new_session_name.push(c);
+        self.new_session_completions.clear();
+        match self.new_session_field {
+            NewSessionField::Name => self.new_session_name.push(c),
+            NewSessionField::Path => self.new_session_path.push(c),
+        }
     }
 
     pub fn pop_new_session_char(&mut self) {
-        self.new_session_name.pop();
+        self.new_session_completions.clear();
+        match self.new_session_field {
+            NewSessionField::Name => self.new_session_name.pop(),
+            NewSessionField::Path => self.new_session_path.pop(),
+        };
+    }
+
+    /// Enter on the name field advances to the path field; Enter on the path
+    /// field creates the window.
+    pub fn confirm_new_session_field(&mut self) -> Result<()> {
+        match self.new_session_field {
+            NewSessionField::Name => {
+                self.new_session_field = NewSessionField::Path;
+                Ok(())
+            }
+            NewSessionField::Path => self.submit_new_session(),
+        }
     }
 
     pub fn submit_new_session(&mut self) -> Result<()> {
         let name = self.new_session_name.trim().to_string();
         if name.is_empty() {
             self.status = "window name cannot be empty".to_string();
+            self.new_session_field = NewSessionField::Name;
             return Ok(());
         }
 
-        let cwd = std::env::current_dir()
-            .ok()
-            .and_then(|p| p.to_str().map(|s| s.to_string()));
+        let cwd = match resolve_new_session_path(&self.new_session_path) {
+            Ok(dir) => dir,
+            Err(msg) => {
+                self.status = msg;
+                self.new_session_field = NewSessionField::Path;
+                return Ok(());
+            }
+        };
 
-        match spawn::create_named_window(&name, cwd.as_deref()) {
+        match spawn::create_named_window(&name, Some(&cwd)) {
             Ok(SpawnResult::Switched { target: _ }) => {
-                self.new_session_mode = false;
-                self.new_session_name.clear();
-                self.status = format!("created window '{name}'");
+                self.cancel_new_session_prompt();
+                self.status = format!("created window '{name}' in {cwd}");
             }
             Ok(SpawnResult::AttachedReturned { target: _ }) => {
-                self.new_session_mode = false;
-                self.new_session_name.clear();
-                self.status = format!("created window '{name}'");
+                self.cancel_new_session_prompt();
+                self.status = format!("created window '{name}' in {cwd}");
                 self.request_terminal_reinit(Duration::from_millis(0));
             }
             Err(err) => {
@@ -770,6 +971,145 @@ fn has_error(recent: &str) -> bool {
         })
 }
 
+/// Whether a pane's foreground command is an interactive shell, i.e. the
+/// agent that used to run there has exited.
+fn is_shell(cmd: &str) -> bool {
+    let cmd = cmd.trim_start_matches('-');
+    matches!(
+        cmd,
+        "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "tcsh" | "csh" | "nu" | "elvish" | "xonsh"
+    )
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PathCompletion {
+    /// The (possibly extended) path input.
+    input: String,
+    /// All matching directory names in the parent directory.
+    candidates: Vec<String>,
+    no_match: bool,
+}
+
+/// Shell-style directory completion for the new-window path field.
+///
+/// Completes the last path component against directories in its parent.  A
+/// unique match is completed with a trailing `/`; multiple matches extend the
+/// input to their longest common prefix and are returned as candidates.
+/// Hidden directories are only offered when the typed prefix starts with `.`.
+/// Relative paths resolve against `home`, matching `resolve_new_session_path`.
+fn complete_dir_path(input: &str, home: &str) -> PathCompletion {
+    let input = if input.is_empty() || input == "~" {
+        "~/".to_string()
+    } else {
+        input.to_string()
+    };
+
+    let (dir_part, prefix) = match input.rfind('/') {
+        Some(idx) => (&input[..=idx], &input[idx + 1..]),
+        None => ("", input.as_str()),
+    };
+
+    let home = home.trim_end_matches('/');
+    let search_dir = if dir_part.is_empty() {
+        std::path::PathBuf::from(home)
+    } else if let Some(rest) = dir_part.strip_prefix("~/") {
+        std::path::Path::new(home).join(rest)
+    } else if dir_part.starts_with('/') {
+        std::path::PathBuf::from(dir_part)
+    } else {
+        std::path::Path::new(home).join(dir_part)
+    };
+
+    let show_hidden = prefix.starts_with('.');
+    let mut candidates: Vec<String> = std::fs::read_dir(&search_dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|name| name.starts_with(prefix))
+                .filter(|name| show_hidden || !name.starts_with('.'))
+                .collect()
+        })
+        .unwrap_or_default();
+    candidates.sort();
+
+    match candidates.len() {
+        0 => PathCompletion {
+            input,
+            candidates,
+            no_match: true,
+        },
+        1 => PathCompletion {
+            input: format!("{dir_part}{}/", candidates[0]),
+            candidates,
+            no_match: false,
+        },
+        _ => {
+            let common = longest_common_prefix(&candidates);
+            let input = if common.len() > prefix.len() {
+                format!("{dir_part}{common}")
+            } else {
+                input
+            };
+            PathCompletion {
+                input,
+                candidates,
+                no_match: false,
+            }
+        }
+    }
+}
+
+fn longest_common_prefix(items: &[String]) -> String {
+    let Some(first) = items.first() else {
+        return String::new();
+    };
+    let mut end = first.len();
+    for item in &items[1..] {
+        end = first
+            .char_indices()
+            .zip(item.chars())
+            .take_while(|((_, a), b)| a == b)
+            .map(|((i, a), _)| i + a.len_utf8())
+            .last()
+            .unwrap_or(0)
+            .min(end);
+    }
+    first[..end].to_string()
+}
+
+/// Expands `~` and validates the directory typed into the new-window prompt.
+/// An empty input (or plain `~`) resolves to the home directory.
+fn resolve_new_session_path(input: &str) -> std::result::Result<String, String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let trimmed = input.trim();
+    let expanded = if trimmed.is_empty() || trimmed == "~" {
+        home.clone()
+    } else if let Some(rest) = trimmed.strip_prefix("~/") {
+        format!("{}/{}", home.trim_end_matches('/'), rest)
+    } else {
+        trimmed.to_string()
+    };
+    if expanded.is_empty() {
+        return Err("could not determine home directory; enter a path".to_string());
+    }
+
+    let path = std::path::Path::new(&expanded);
+    let path = if path.is_relative() {
+        std::path::Path::new(&home).join(path)
+    } else {
+        path.to_path_buf()
+    };
+    if !path.is_dir() {
+        return Err(format!("not a directory: {}", path.display()));
+    }
+    let path = path.canonicalize().unwrap_or(path);
+    path.to_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "path is not valid UTF-8".to_string())
+}
+
 /// Checks the last visible non-empty line for a CLI's composer prompt.  A
 /// prompt elsewhere in the transcript is just quoted conversation text.
 fn has_composer(recent: &str, prompts: &[&str]) -> bool {
@@ -868,6 +1208,54 @@ fn fuzzy_subsequence_match(haystack: &str, needle: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn temp_home(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("aio-complete-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for sub in ["code/aio", "code/aiox", "config", ".cache", "docs"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        std::fs::write(dir.join("code/afile"), "").unwrap();
+        dir
+    }
+
+    #[test]
+    fn completes_unique_match_with_slash() {
+        let home = temp_home("unique");
+        let h = home.to_str().unwrap();
+        assert_eq!(complete_dir_path("~/co", h).input, "~/co");
+        assert_eq!(complete_dir_path("~/cod", h).input, "~/code/");
+        assert_eq!(complete_dir_path("~/d", h).input, "~/docs/");
+        assert_eq!(complete_dir_path("docs", h).input, "docs/");
+        let abs = format!("{h}/cod");
+        assert_eq!(complete_dir_path(&abs, h).input, format!("{h}/code/"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn extends_to_common_prefix_and_lists_candidates() {
+        let home = temp_home("common");
+        let h = home.to_str().unwrap();
+        let c = complete_dir_path("~/code/a", h);
+        assert_eq!(c.input, "~/code/aio");
+        assert_eq!(c.candidates, vec!["aio".to_string(), "aiox".to_string()]);
+        let c = complete_dir_path("~/co", h);
+        assert_eq!(c.candidates, vec!["code".to_string(), "config".to_string()]);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn hides_dotdirs_and_files_and_reports_no_match() {
+        let home = temp_home("hidden");
+        let h = home.to_str().unwrap();
+        let c = complete_dir_path("~/", h);
+        assert!(!c.candidates.contains(&".cache".to_string()));
+        assert_eq!(complete_dir_path("~/.ca", h).input, "~/.cache/");
+        let c = complete_dir_path("~/code/af", h);
+        assert!(c.no_match);
+        assert_eq!(c.input, "~/code/af");
+        assert_eq!(complete_dir_path("", h).input, "~/");
+        std::fs::remove_dir_all(home).unwrap();
+    }
     fn dummy_pane() -> PaneInfo {
         PaneInfo {
             pane_id: "%1".to_string(),

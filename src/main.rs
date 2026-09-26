@@ -1,6 +1,7 @@
 mod actions;
 mod app;
 mod detect;
+mod history;
 mod input;
 mod models;
 mod sound;

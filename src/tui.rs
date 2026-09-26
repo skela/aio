@@ -6,7 +6,7 @@ use ratatui::{Frame, layout::Rect};
 use std::env;
 use std::sync::LazyLock;
 
-use crate::app::{App, FocusPanel};
+use crate::app::{App, FocusPanel, NewSessionField};
 use crate::models::AgentStatus;
 
 static HOME_DIR: LazyLock<Option<String>> = LazyLock::new(|| env::var("HOME").ok());
@@ -61,6 +61,86 @@ pub fn draw(f: &mut Frame<'_>, app: &App) {
     if app.new_session_mode {
         draw_new_session_prompt(f, app);
     }
+
+    if app.closed_visible {
+        draw_closed_sessions(f, app);
+    }
+}
+
+fn draw_closed_sessions(f: &mut Frame<'_>, app: &App) {
+    let area = f.area();
+    let width = area.width.saturating_sub(8).clamp(40, 110).min(area.width);
+    let max_rows = area.height.saturating_sub(8).max(3) as usize;
+    let rows_len = app.closed_sessions.len().clamp(1, max_rows);
+    let height = (rows_len as u16 + 5).min(area.height);
+    let x = area.width.saturating_sub(width) / 2;
+    let y = area.height.saturating_sub(height) / 2;
+    let popup_area = Rect::new(x, y, width, height);
+
+    let block = Block::default()
+        .title(" Recently closed ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(Color::Black));
+    let inner = block.inner(popup_area);
+    f.render_widget(Clear, popup_area);
+    f.render_widget(block, popup_area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let hint = Paragraph::new("enter=reopen  d=forget  j/k=move  esc=close")
+        .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(hint, chunks[1]);
+
+    if app.closed_sessions.is_empty() {
+        f.render_widget(
+            Paragraph::new("No closed sessions yet.").style(Style::default().fg(Color::Gray)),
+            chunks[0],
+        );
+        return;
+    }
+
+    // Keep the selection visible when the list is taller than the popup.
+    let visible = chunks[0].height.saturating_sub(1).max(1) as usize;
+    let offset = app.closed_selected.saturating_sub(visible - 1);
+    let now = crate::history::now_secs();
+    let rows = app
+        .closed_sessions
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(visible)
+        .map(|(idx, c)| {
+            let style = if idx == app.closed_selected {
+                Style::default().bg(Color::Blue)
+            } else {
+                Style::default()
+            };
+            Row::new(vec![
+                Cell::from(crate::history::format_age(c.closed_at, now)),
+                Cell::from(c.agent.clone()),
+                Cell::from(format!("{}:{}", c.tmux_session, c.window_name)),
+                Cell::from(compact_home(&c.cwd)),
+                Cell::from(c.display_title()),
+            ])
+            .style(style)
+        });
+    let header = Row::new(vec!["Closed", "Agent", "Window", "CWD", "Title"])
+        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(8),
+            Constraint::Length(9),
+            Constraint::Length(18),
+            Constraint::Length(26),
+            Constraint::Min(10),
+        ],
+    )
+    .header(header);
+    f.render_widget(table, chunks[0]);
 }
 
 fn draw_header(f: &mut Frame<'_>, area: Rect, app: &App) {
@@ -238,6 +318,7 @@ fn draw_help_overlay(f: &mut Frame<'_>) {
         Line::from(vec![Span::styled("  E          ", Style::default().fg(Color::Cyan)), Span::raw("eject to terminal")]),
         Line::from(vec![Span::styled("  <spc>gg    ", Style::default().fg(Color::Cyan)), Span::raw("open lazygit in agent's cwd")]),
         Line::from(vec![Span::styled("  c / n     ", Style::default().fg(Color::Cyan)), Span::raw("create new window (opencode) in this tmux session")]),
+        Line::from(vec![Span::styled("  r          ", Style::default().fg(Color::Cyan)), Span::raw("recently closed sessions (reopen)")]),
         Line::from(vec![Span::styled("  /          ", Style::default().fg(Color::Cyan)), Span::raw("search")]),
         Line::from(vec![Span::styled("  p          ", Style::default().fg(Color::Cyan)), Span::raw("toggle preview")]),
         Line::from(vec![Span::styled("  f          ", Style::default().fg(Color::Cyan)), Span::raw("cycle filter")]),
@@ -264,27 +345,60 @@ fn draw_help_overlay(f: &mut Frame<'_>) {
 }
 
 fn draw_new_session_prompt(f: &mut Frame<'_>, app: &App) {
-    let lines = vec![
+    let field_line = |label: &'static str, value: &str, active: bool| {
+        let (marker, label_style, value_style, cursor) = if active {
+            (
+                "> ",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::LightYellow),
+                "_",
+            )
+        } else {
+            (
+                "  ",
+                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
+                "",
+            )
+        };
+        Line::from(vec![
+            Span::styled(marker, label_style),
+            Span::styled(label, label_style),
+            Span::styled(format!("{value}{cursor}"), value_style),
+        ])
+    };
+
+    let width = 60u16;
+    let mut lines = vec![
         Line::from(Span::styled(
             " New opencode window ",
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(vec![
-            Span::raw("name: "),
-            Span::styled(
-                format!("{}_", app.new_session_name),
-                Style::default().fg(Color::LightYellow),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "enter=create  esc=cancel",
-            Style::default().fg(Color::DarkGray),
-        )),
+        field_line(
+            "name: ",
+            &app.new_session_name,
+            app.new_session_field == NewSessionField::Name,
+        ),
+        field_line(
+            "path: ",
+            &app.new_session_path,
+            app.new_session_field == NewSessionField::Path,
+        ),
     ];
 
-    let width = 46u16;
+    if !app.new_session_completions.is_empty() {
+        lines.extend(completion_lines(
+            &app.new_session_completions,
+            width.saturating_sub(4) as usize,
+        ));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "tab=next/complete  enter=next/create  esc=cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
     let height = lines.len() as u16 + 2;
     let area = f.area();
     let x = area.width.saturating_sub(width) / 2;
@@ -300,6 +414,46 @@ fn draw_new_session_prompt(f: &mut Frame<'_>, app: &App) {
         ),
         popup_area,
     );
+}
+
+/// Lays out completion candidates as wrapped rows (dirs shown with a trailing
+/// `/`), capped so the popup stays small.
+fn completion_lines(candidates: &[String], max_width: usize) -> Vec<Line<'static>> {
+    const MAX_ROWS: usize = 6;
+    let style = Style::default().fg(Color::Gray);
+    let indent = "    ";
+    let mut rows: Vec<String> = Vec::new();
+    let mut current = String::from(indent);
+    let mut shown = 0;
+    for name in candidates {
+        let item = format!("{name}/");
+        let needed = if current.len() > indent.len() { item.len() + 2 } else { item.len() };
+        if current.len() + needed > max_width && current.len() > indent.len() {
+            if rows.len() + 1 >= MAX_ROWS {
+                break;
+            }
+            rows.push(std::mem::replace(&mut current, String::from(indent)));
+        }
+        if current.len() > indent.len() {
+            current.push_str("  ");
+        }
+        current.push_str(&item);
+        shown += 1;
+    }
+    if current.len() > indent.len() {
+        rows.push(current);
+    }
+    let mut lines: Vec<Line<'static>> = rows
+        .into_iter()
+        .map(|r| Line::from(Span::styled(r, style)))
+        .collect();
+    if shown < candidates.len() {
+        lines.push(Line::from(Span::styled(
+            format!("{indent}… {} more", candidates.len() - shown),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    lines
 }
 
 fn draw_preview(f: &mut Frame<'_>, area: Rect, app: &App) {

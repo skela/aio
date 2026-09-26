@@ -4,7 +4,11 @@ use anyhow::{Context, Result, anyhow};
 
 use crate::models::PaneInfo;
 
-const FMT: &str = "#{pane_id}|#{session_name}|#{window_index}|#{window_name}|#{pane_index}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}|#{pane_title}|#{pane_active}|#{pane_dead}|#{pane_start_command}";
+// Fields are separated by ASCII unit separator (0x1f) rather than `|`: pane
+// titles routinely contain `|` (opencode sets `OC | <session title>`), which
+// used to shift every later field.
+const SEP: char = '\x1f';
+const FMT: &str = "#{pane_id}\x1f#{session_name}\x1f#{window_index}\x1f#{window_name}\x1f#{pane_index}\x1f#{pane_pid}\x1f#{pane_current_command}\x1f#{pane_current_path}\x1f#{pane_title}\x1f#{pane_active}\x1f#{pane_dead}\x1f#{pane_start_command}";
 
 pub fn list_panes() -> Result<Vec<PaneInfo>> {
     let output = Command::new("tmux")
@@ -57,7 +61,7 @@ pub fn capture_pane_tail_ansi(pane_id: &str, lines: usize) -> Result<String> {
 }
 
 fn parse_line(line: &str) -> Result<PaneInfo> {
-    let parts: Vec<&str> = line.splitn(12, '|').collect();
+    let parts: Vec<&str> = line.splitn(12, SEP).collect();
     if parts.len() != 12 {
         return Err(anyhow!("unexpected tmux pane format"));
     }

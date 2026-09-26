@@ -127,6 +127,49 @@ pub fn create_named_window(window_name: &str, cwd: Option<&str>) -> Result<Spawn
     Ok(SpawnResult::Switched { target })
 }
 
+/// Recreates a closed agent window in its original tmux session (creating the
+/// session if it no longer exists) and focuses it.  `command` is run by
+/// tmux's default shell, so it may contain arguments.
+pub fn reopen_window(
+    tmux_session: &str,
+    window_name: &str,
+    cwd: &str,
+    command: &str,
+) -> Result<SpawnResult> {
+    let in_tmux = env::var("TMUX").is_ok();
+    let session = if tmux_session.is_empty() {
+        DEFAULT_AI_SESSION
+    } else {
+        tmux_session
+    };
+    let window_name = sanitize_target_name(window_name);
+    let window_name = if window_name.is_empty() {
+        "agent".to_string()
+    } else {
+        window_name
+    };
+    let cwd = valid_cwd_arg(cwd);
+
+    let args = if session_exists(session)? {
+        let target_window = format!("{session}:{}", next_window_index(session)?);
+        new_window_args(&target_window, &window_name, cwd.as_deref(), command)
+    } else {
+        new_session_args(session, &window_name, cwd.as_deref(), command)
+    };
+    let target = tmux_capture_owned(&args, "reopen window")?;
+
+    if in_tmux {
+        tmux_run(&["switch-client", "-t", session], "switch to reopened session")?;
+        tmux_run(&["select-window", "-t", &target], "select reopened window")?;
+        tmux_run(&["select-pane", "-t", &target], "select reopened pane")?;
+        return Ok(SpawnResult::Switched { target });
+    }
+
+    tmux_run(&["select-window", "-t", &target], "select reopened window")?;
+    tmux_run(&["attach-session", "-t", session], "attach to reopened session")?;
+    Ok(SpawnResult::AttachedReturned { target })
+}
+
 fn sanitize_target_name(name: &str) -> String {
     name.trim()
         .chars()
