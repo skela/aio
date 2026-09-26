@@ -10,12 +10,21 @@ const AUDIO_PLAYER_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 static SOUND_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SOUND_DONE: &[u8] = include_bytes!("../assets/sounds/done.mp3");
+static SOUND_INPUT: &[u8] = include_bytes!("../assets/sounds/input.mp3");
 
 /// Play the done sound in a background thread.
 /// Silently does nothing if no audio player is available.
-pub fn play() {
+pub fn play_done() {
     std::thread::spawn(|| {
         let _ = play_bytes(SOUND_DONE);
+    });
+}
+
+/// Play the soft two-note cue used when an agent needs user input.
+/// Silently does nothing if no audio player is available.
+pub fn play_input_needed() {
+    std::thread::spawn(|| {
+        let _ = play_bytes(SOUND_INPUT);
     });
 }
 

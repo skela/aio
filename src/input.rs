@@ -98,6 +98,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('k') | KeyCode::Up => app.previous(),
         KeyCode::Char('f') => app.cycle_filter(),
         KeyCode::Char('s') => app.cycle_sort(),
+        KeyCode::Char('t') => app.test_sound(true),
+        KeyCode::Char('T') => app.test_sound(false),
         KeyCode::Char('E') => app.eject_selected()?,
         KeyCode::Char('c') | KeyCode::Char('n') => app.start_new_session_prompt(),
         KeyCode::Enter => app.jump_selected()?,

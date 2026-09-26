@@ -52,6 +52,7 @@ It is built for tmux-heavy usage and gives you an `htop`-style overview of:
   - `Esc`: cancel
   - requires `aio` to be running inside tmux; if not, an error is shown and the prompt stays open
 - `p`: toggle preview panel
+- `t` / `T`: test the input-needed / done sound
 - `Esc` (outside search mode): hide preview
 
 ## Agent Resume Commands Used for Adopt
@@ -73,5 +74,8 @@ cargo run
 ## Notes
 
 - Unknown agents are hidden from the tmux table.
-- Status is heuristic-based from recent pane output.
+- Status is inferred from the current screen footer rather than the full
+  transcript. `aio` recognizes each CLI's interrupt and composer controls,
+  and uses separate sounds when a tracked tmux pane completes work or moves
+  from working to `waiting_input`.
 - Outside-tmux status is currently coarse compared to tmux status.

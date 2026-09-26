@@ -187,11 +187,13 @@ impl App {
                 self.last_became_active_by_pane.remove(&record.pane.pane_id);
             }
 
-            // Sound: WaitingInput — agent needs attention.
-            if prev_status.map_or(false, |p| p != AgentStatus::WaitingInput)
+            // Sound: the pane has newly entered a state that needs attention.
+            // Do not play on first discovery, since aio may be opened while
+            // several agents are already waiting.
+            if prev_status.is_some_and(|status| status != AgentStatus::WaitingInput)
                 && record.status == AgentStatus::WaitingInput
             {
-                crate::sound::play();
+                crate::sound::play_input_needed();
             }
             // Sound: done — agent was active for at least 10s and just went idle.
             // The 10s floor prevents blips from transient keyword matches.
@@ -199,7 +201,7 @@ impl App {
                 let active_since = self.last_became_active_by_pane.get(&record.pane.pane_id);
                 let active_duration = active_since.map_or(Duration::ZERO, |t| now.saturating_duration_since(*t));
                 if active_duration >= Duration::from_secs(10) {
-                    crate::sound::play();
+                    crate::sound::play_done();
                 }
             }
             record.last_seen = *self
@@ -515,6 +517,16 @@ impl App {
         self.help_visible = !self.help_visible;
     }
 
+    pub fn test_sound(&mut self, input_needed: bool) {
+        if input_needed {
+            crate::sound::play_input_needed();
+            self.status = "played input-needed sound".to_string();
+        } else {
+            crate::sound::play_done();
+            self.status = "played done sound".to_string();
+        }
+    }
+
     pub fn hide_help(&mut self) {
         self.help_visible = false;
     }
@@ -585,79 +597,72 @@ fn infer_status(
         return AgentStatus::Idle;
     }
 
-    let t = tail.to_ascii_lowercase();
-    // Collapse runs of spaces before keyword matching: agent CLIs pad their
-    // status footers with variable amounts of whitespace (icons, progress
-    // bars, column alignment), so literal multi-space keywords are brittle.
-    let recent = collapse_spaces(&take_last_lines(&t, 16));
+    // Only inspect the current screen footer.  capture-pane includes old
+    // transcript lines, so matching the whole tail makes a completed tool
+    // invocation (or an old error) look like the current state indefinitely.
+    let recent = collapse_spaces(&take_last_lines(&tail.to_ascii_lowercase(), 8));
 
-    if agent == AgentType::Opencode {
-        return infer_opencode_status(&recent, pane, since_last_output);
+    match agent {
+        AgentType::Codex => infer_codex_status(&recent, since_last_output),
+        AgentType::Opencode => infer_opencode_status(&recent),
+        AgentType::Claude => infer_claude_status(&recent, since_last_output),
+        AgentType::Unknown => AgentStatus::Idle,
     }
+}
 
-    if contains_any(
-        &recent,
-        &[
-            "press enter",
-            "continue?",
-            "y/n",
-            "[y/n]",
-            "approve",
-            "waiting for input",
-            "awaiting input",
-            "what would you like",
-            "next task",
-            "enter to continue",
-        ],
-    ) {
-        return AgentStatus::WaitingInput;
-    }
-
-    if contains_any(
-        &recent,
-        &["error:", " failed", "exception", "traceback", "permission denied"],
-    ) {
-        return AgentStatus::Error;
-    }
-
-    if contains_any(
-        &recent,
-        &["editing", "apply patch", "diff", "updated file", "writing"],
-    ) {
-        return AgentStatus::Editing;
-    }
-
-    if contains_any(
-        &recent,
-        &[
-            "running",
-            "executing",
-            "building",
-            "compiling",
-            "testing",
-            "searching",
-            "fetching",
-        ],
-    ) {
+fn infer_codex_status(recent: &str, since_last_output: Duration) -> AgentStatus {
+    // Codex replaces its composer with this footer while it is generating or
+    // executing.  It is substantially more reliable than matching verbs in
+    // the conversation transcript.
+    if contains_any(recent, &["esc to interrupt", "ctrl+c to interrupt", "working..."]) {
         return AgentStatus::Running;
     }
-
-    if contains_any(&recent, &["thinking", "analyzing", "planning", "reasoning"]) {
+    if contains_any(recent, &["do you want to proceed", "would you like to", "select an option", "enter to select", "press enter to", "allow this", "approve this"]) {
+        return AgentStatus::WaitingInput;
+    }
+    // `›` is Codex's visible composer.  It is displayed only once control is
+    // back with the user (including after a completed response).
+    if has_composer(recent, &["›", "❯"]) {
+        return AgentStatus::WaitingInput;
+    }
+    if has_error(recent) {
+        return AgentStatus::Error;
+    }
+    if contains_any(recent, &["thinking", "analyzing", "planning", "reasoning"]) {
         return AgentStatus::Thinking;
     }
-
-    if since_last_output > Duration::from_secs(45) {
-        return AgentStatus::Idle;
-    }
-
-    if pane.active && since_last_output <= Duration::from_secs(15) {
+    if since_last_output <= Duration::from_secs(4) {
         AgentStatus::Running
     } else {
         AgentStatus::Idle
     }
 }
 
-fn infer_opencode_status(recent: &str, _pane: &PaneInfo, _since_last_output: Duration) -> AgentStatus {
+fn infer_claude_status(recent: &str, since_last_output: Duration) -> AgentStatus {
+    if contains_any(recent, &["esc to interrupt", "ctrl+c to interrupt", "working..."]) {
+        return AgentStatus::Running;
+    }
+    if contains_any(recent, &["do you want to proceed", "would you like to", "enter to select", "press enter to", "allow this", "approve this", "waiting for input", "awaiting input"]) {
+        return AgentStatus::WaitingInput;
+    }
+    // Claude's composer is normally a bare `>` at the bottom of the screen.
+    if has_composer(recent, &[">"]) {
+        return AgentStatus::WaitingInput;
+    }
+    if has_error(recent) {
+        return AgentStatus::Error;
+    }
+    if contains_any(recent, &["thinking", "analyzing", "planning", "reasoning"]) {
+        return AgentStatus::Thinking;
+    }
+    if since_last_output <= Duration::from_secs(4) {
+        AgentStatus::Running
+    } else {
+        AgentStatus::Idle
+    }
+}
+
+fn infer_opencode_status(recent: &str) -> AgentStatus {
     // Waiting for permission approval or user input
     if contains_any(
         recent,
@@ -674,19 +679,7 @@ fn infer_opencode_status(recent: &str, _pane: &PaneInfo, _since_last_output: Dur
         return AgentStatus::WaitingInput;
     }
 
-    // Error states
-    if contains_any(
-        recent,
-        &[
-            "error:",
-            " failed",
-            "exception",
-            "traceback",
-            "permission denied",
-        ],
-    ) {
-        return AgentStatus::Error;
-    }
+    if has_error(recent) { return AgentStatus::Error; }
 
     // Editing / writing files
     if contains_any(
@@ -747,9 +740,47 @@ fn infer_opencode_status(recent: &str, _pane: &PaneInfo, _since_last_output: Dur
         return AgentStatus::Thinking;
     }
 
-    // Fallback: silence-based idle detection
-    // No pane.active heuristic — opencode has precise enough keyword signals
-    AgentStatus::Idle
+    // OpenCode's idle footer always keeps the composer controls visible. Once
+    // its interrupt marker disappears, it is ready for user input.  This also
+    // avoids treating a quiet, completed OpenCode turn as merely "idle".
+    if contains_any(recent, &["ctrl+p commands", "ctrl+p to open commands"])
+        || has_composer(recent, &[">", "❯"])
+    {
+        AgentStatus::WaitingInput
+    } else {
+        AgentStatus::Idle
+    }
+}
+
+fn has_error(recent: &str) -> bool {
+    // A transcript can contain many historical command failures.  Treat an
+    // error as current only when it is rendered in the bottom status area,
+    // rather than anywhere in the captured screen.
+    recent
+        .lines()
+        .rev()
+        .filter(|line| !line.trim().is_empty())
+        .take(2)
+        .any(|line| {
+            let line = line.trim_start();
+            line.starts_with("error:")
+                || line.starts_with("fatal:")
+                || line.starts_with("exception:")
+                || line.contains("permission denied")
+        })
+}
+
+/// Checks the last visible non-empty line for a CLI's composer prompt.  A
+/// prompt elsewhere in the transcript is just quoted conversation text.
+fn has_composer(recent: &str, prompts: &[&str]) -> bool {
+    recent
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| {
+            let line = line.trim_start();
+            prompts.iter().any(|prompt| line == *prompt || line.starts_with(&format!("{prompt} ")))
+        })
 }
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
@@ -872,6 +903,48 @@ mod tests {
         let tail = "thinking about the best approach\n";
         let status = infer_status(AgentType::Opencode, &dummy_pane(), tail, Duration::from_secs(1));
         assert_eq!(status, AgentStatus::Thinking);
+    }
+
+    #[test]
+    fn codex_interrupt_footer_is_running() {
+        let tail = "I will inspect the project.\n\n  • Working (12s) · esc to interrupt\n";
+        let status = infer_status(AgentType::Codex, &dummy_pane(), tail, Duration::from_secs(20));
+        assert_eq!(status, AgentStatus::Running);
+    }
+
+    #[test]
+    fn codex_composer_is_waiting_for_input() {
+        let tail = "Finished the changes.\n\n› \n";
+        let status = infer_status(AgentType::Codex, &dummy_pane(), tail, Duration::from_secs(20));
+        assert_eq!(status, AgentStatus::WaitingInput);
+    }
+
+    #[test]
+    fn opencode_idle_footer_is_waiting_for_input() {
+        let tail = "Implemented the request.\n\n  ctrl+p commands\n";
+        let status = infer_status(AgentType::Opencode, &dummy_pane(), tail, Duration::from_secs(20));
+        assert_eq!(status, AgentStatus::WaitingInput);
+    }
+
+    #[test]
+    fn claude_composer_is_waiting_for_input() {
+        let tail = "Task complete.\n\n> \n";
+        let status = infer_status(AgentType::Claude, &dummy_pane(), tail, Duration::from_secs(20));
+        assert_eq!(status, AgentStatus::WaitingInput);
+    }
+
+    #[test]
+    fn old_error_does_not_override_current_codex_composer() {
+        let tail = "error: the previous command failed\nmore output\n\n› fix it\n";
+        let status = infer_status(AgentType::Codex, &dummy_pane(), tail, Duration::from_secs(20));
+        assert_eq!(status, AgentStatus::WaitingInput);
+    }
+
+    #[test]
+    fn transcript_error_is_not_a_current_error_state() {
+        let tail = "error: a previous command failed\nmore transcript\nstatus summary\n";
+        let status = infer_status(AgentType::Codex, &dummy_pane(), tail, Duration::from_secs(20));
+        assert_eq!(status, AgentStatus::Idle);
     }
 
     #[test]

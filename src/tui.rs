@@ -21,25 +21,22 @@ pub fn draw(f: &mut Frame<'_>, app: &App) {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1),
-                Constraint::Length(1),
                 Constraint::Min(10),
                 Constraint::Length(5),
             ])
             .split(f.area());
 
         draw_header(f, chunks[0], app);
-        draw_search(f, chunks[1], app);
         if app.preview_visible {
-            draw_preview(f, chunks[2], app);
+            draw_preview(f, chunks[1], app);
         } else {
-            draw_table(f, chunks[2], app);
+            draw_table(f, chunks[1], app);
         }
-        draw_detail_panels(f, chunks[3], app);
+        draw_detail_panels(f, chunks[2], app);
     } else {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Min(8),
                 Constraint::Length(6),
@@ -48,14 +45,13 @@ pub fn draw(f: &mut Frame<'_>, app: &App) {
             .split(f.area());
 
         draw_header(f, chunks[0], app);
-        draw_search(f, chunks[1], app);
         if app.preview_visible {
-            draw_preview(f, chunks[2], app);
+            draw_preview(f, chunks[1], app);
         } else {
-            draw_table(f, chunks[2], app);
+            draw_table(f, chunks[1], app);
         }
-        draw_external_agents(f, chunks[3], app);
-        draw_detail_panels(f, chunks[4], app);
+        draw_external_agents(f, chunks[2], app);
+        draw_detail_panels(f, chunks[3], app);
     }
 
     if app.help_visible {
@@ -68,7 +64,7 @@ pub fn draw(f: &mut Frame<'_>, app: &App) {
 }
 
 fn draw_header(f: &mut Frame<'_>, area: Rect, app: &App) {
-    let text = if app.status.is_empty() {
+    let mut text = if app.status.is_empty() {
         format!(
             "agenttop | filter={} sort={} records={}",
             app.filter.label(),
@@ -84,24 +80,11 @@ fn draw_header(f: &mut Frame<'_>, area: Rect, app: &App) {
             app.status
         )
     };
+    if app.search_mode || !app.search_query.is_empty() {
+        text.push_str(&format!(" | search: /{}", app.search_query));
+    }
     let p = Paragraph::new(text).style(Style::default().fg(Color::Cyan));
     f.render_widget(p, area);
-}
-
-fn draw_search(f: &mut Frame<'_>, area: Rect, app: &App) {
-    let prompt = if app.search_mode { "/" } else { "" };
-    let query = if app.search_query.is_empty() {
-        "(type / to search, esc to clear)"
-    } else {
-        &app.search_query
-    };
-    let text = format!("search: {prompt}{query}");
-    let style = if app.search_mode {
-        Style::default().fg(Color::LightYellow)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    f.render_widget(Paragraph::new(text).style(style), area);
 }
 
 fn draw_table(f: &mut Frame<'_>, area: Rect, app: &App) {
@@ -259,6 +242,7 @@ fn draw_help_overlay(f: &mut Frame<'_>) {
         Line::from(vec![Span::styled("  p          ", Style::default().fg(Color::Cyan)), Span::raw("toggle preview")]),
         Line::from(vec![Span::styled("  f          ", Style::default().fg(Color::Cyan)), Span::raw("cycle filter")]),
         Line::from(vec![Span::styled("  s          ", Style::default().fg(Color::Cyan)), Span::raw("cycle sort")]),
+        Line::from(vec![Span::styled("  t / T      ", Style::default().fg(Color::Cyan)), Span::raw("test input / done sound")]),
         Line::from(vec![Span::styled("  ctrl+o/a/c ", Style::default().fg(Color::Cyan)), Span::raw("set filter: opencode/codex/claude")]),
         Line::from(vec![Span::styled("  ?          ", Style::default().fg(Color::Cyan)), Span::raw("toggle this help")]),
         Line::from(vec![Span::styled("  esc        ", Style::default().fg(Color::Cyan)), Span::raw("close overlays")]),
