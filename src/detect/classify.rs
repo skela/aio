@@ -5,7 +5,8 @@ use crate::models::{AgentRecord, AgentStatus, AgentType, PaneInfo};
 
 static CLAUDE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bclaude\b").expect("regex"));
 static CODEX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bcodex\b").expect("regex"));
-static OPENCODE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bopencode\b").expect("regex"));
+static OPENCODE_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b(?:opencode|open-code)\b").expect("regex"));
 
 pub fn detect_agent(pane: PaneInfo, full_argv: String) -> AgentRecord {
     let (agent, _confidence) = best_match(&pane, &full_argv);

@@ -4,16 +4,31 @@ use std::path::Path;
 
 use crate::models::{AgentStatus, AgentType, ExternalAgent};
 
-pub fn resolve_deepest_argv(root_pid: i32) -> String {
-    let mut best = read_cmdline(root_pid).unwrap_or_default();
+/// Returns an argv from a pane's process tree that is useful for classifying
+/// the pane. Prefer a recognized agent process over helper children (for
+/// example, npm or Node) whose longer command lines can otherwise hide it.
+pub fn resolve_agent_argv(root_pid: i32) -> String {
+    let root_argv = read_cmdline(root_pid).unwrap_or_default();
+    let mut best = root_argv.clone();
+    let mut agent_argv = None;
+    remember_agent_argv(
+        &mut agent_argv,
+        &read_comm(root_pid).unwrap_or_default(),
+        &root_argv,
+    );
     let mut q = VecDeque::from([root_pid]);
     let mut seen = HashSet::from([root_pid]);
 
     while let Some(pid) = q.pop_front() {
-        if let Some(cmdline) = read_cmdline(pid)
-            && cmdline.len() > best.len()
-        {
-            best = cmdline;
+        if let Some(cmdline) = read_cmdline(pid) {
+            if cmdline.len() > best.len() {
+                best = cmdline.clone();
+            }
+            remember_agent_argv(
+                &mut agent_argv,
+                &read_comm(pid).unwrap_or_default(),
+                &cmdline,
+            );
         }
 
         for child in children_of(pid) {
@@ -23,7 +38,26 @@ pub fn resolve_deepest_argv(root_pid: i32) -> String {
         }
     }
 
-    best
+    agent_argv.unwrap_or(best)
+}
+
+fn remember_agent_argv(selected: &mut Option<String>, comm: &str, cmdline: &str) {
+    if selected.is_none() && is_agent_process(comm, cmdline) {
+        *selected = Some(cmdline.to_string());
+    }
+}
+
+fn is_agent_process(comm: &str, cmdline: &str) -> bool {
+    let argv0 = cmdline.split_whitespace().next().unwrap_or_default();
+    is_agent_executable(comm) || is_agent_executable(argv0)
+}
+
+fn is_agent_executable(name: &str) -> bool {
+    let basename = name.rsplit('/').next().unwrap_or(name);
+    matches!(
+        basename.to_ascii_lowercase().as_str(),
+        "claude" | "claude-code" | "codex" | "opencode" | "open-code"
+    )
 }
 
 pub fn collect_process_tree(root_pid: i32) -> HashSet<i32> {
@@ -193,5 +227,34 @@ fn read_cmdline(pid: i32) -> Option<String> {
         None
     } else {
         Some(parts.join(" "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_agent_process, remember_agent_argv};
+
+    #[test]
+    fn recognizes_supported_agent_executables() {
+        assert!(is_agent_process("opencode", "opencode --continue"));
+        assert!(is_agent_process("codex", "/usr/bin/codex resume --last"));
+        assert!(is_agent_process("claude-code", "claude-code --continue"));
+        assert!(is_agent_process("open-code", "open-code"));
+    }
+
+    #[test]
+    fn does_not_treat_helper_processes_as_agent_executables() {
+        assert!(!is_agent_process("node", "node /tmp/worker.js --opencode"));
+        assert!(!is_agent_process("fish", "fish"));
+    }
+
+    #[test]
+    fn keeps_the_agent_argv_instead_of_a_longer_helper_argv() {
+        let mut selected = None;
+        remember_agent_argv(&mut selected, "fish", "fish");
+        remember_agent_argv(&mut selected, "opencode", "opencode --continue");
+        remember_agent_argv(&mut selected, "node", &format!("node {}", "x".repeat(200)));
+
+        assert_eq!(selected.as_deref(), Some("opencode --continue"));
     }
 }

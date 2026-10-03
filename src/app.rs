@@ -179,7 +179,7 @@ impl App {
         let mut new_records = Vec::with_capacity(panes.len());
 
         for pane in panes {
-            let argv = process::resolve_deepest_argv(pane.pid);
+            let argv = process::resolve_agent_argv(pane.pid);
             let pane_tail = query::capture_pane_tail(&pane.pane_id, 80).unwrap_or_default();
             let mut record = classify::detect_agent(pane, argv);
             let now = Instant::now();
