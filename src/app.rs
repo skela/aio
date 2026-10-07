@@ -104,6 +104,7 @@ pub struct App {
     pub new_session_mode: bool,
     pub new_session_name: String,
     pub new_session_path: String,
+    pub new_session_path_customized: bool,
     pub new_session_field: NewSessionField,
     /// Directory candidates shown under the path field after an ambiguous Tab.
     pub new_session_completions: Vec<String>,
@@ -152,6 +153,7 @@ impl App {
             new_session_mode: false,
             new_session_name: String::new(),
             new_session_path: String::new(),
+            new_session_path_customized: false,
             new_session_field: NewSessionField::Name,
             new_session_completions: Vec::new(),
             preview_visible: false,
@@ -593,6 +595,7 @@ impl App {
         self.new_session_mode = true;
         self.new_session_name.clear();
         self.new_session_path = "~/".to_string();
+        self.new_session_path_customized = false;
         self.new_session_field = NewSessionField::Name;
         self.new_session_completions.clear();
     }
@@ -601,6 +604,7 @@ impl App {
         self.new_session_mode = false;
         self.new_session_name.clear();
         self.new_session_path.clear();
+        self.new_session_path_customized = false;
         self.new_session_field = NewSessionField::Name;
         self.new_session_completions.clear();
     }
@@ -613,11 +617,15 @@ impl App {
         };
     }
 
-    /// Tab: on the name field, move to the path field; on the path field,
-    /// complete the directory name (shell-style).
+    /// Tab: on the name field, reset the suggested path to `~/` and move to
+    /// the path field; on the path field, complete the directory name.
     pub fn tab_new_session_field(&mut self) {
         match self.new_session_field {
-            NewSessionField::Name => self.toggle_new_session_field(),
+            NewSessionField::Name => {
+                self.new_session_path = "~/".to_string();
+                self.new_session_path_customized = true;
+                self.toggle_new_session_field();
+            }
             NewSessionField::Path => self.complete_new_session_path(),
         }
     }
@@ -639,16 +647,39 @@ impl App {
     pub fn push_new_session_char(&mut self, c: char) {
         self.new_session_completions.clear();
         match self.new_session_field {
-            NewSessionField::Name => self.new_session_name.push(c),
-            NewSessionField::Path => self.new_session_path.push(c),
+            NewSessionField::Name => {
+                self.new_session_name.push(c);
+                self.update_suggested_new_session_path();
+            }
+            NewSessionField::Path => {
+                self.new_session_path_customized = true;
+                self.new_session_path.push(c);
+            }
         }
     }
 
     pub fn pop_new_session_char(&mut self) {
         self.new_session_completions.clear();
         match self.new_session_field {
-            NewSessionField::Name => self.new_session_name.pop(),
-            NewSessionField::Path => self.new_session_path.pop(),
+            NewSessionField::Name => {
+                self.new_session_name.pop();
+                self.update_suggested_new_session_path();
+            }
+            NewSessionField::Path => {
+                self.new_session_path_customized = true;
+                self.new_session_path.pop();
+            }
+        };
+    }
+
+    fn update_suggested_new_session_path(&mut self) {
+        if self.new_session_path_customized {
+            return;
+        }
+        self.new_session_path = if self.new_session_name.is_empty() {
+            "~/".to_string()
+        } else {
+            format!("~/wip/{}", self.new_session_name)
         };
     }
 
@@ -1079,13 +1110,20 @@ fn longest_common_prefix(items: &[String]) -> String {
     first[..end].to_string()
 }
 
-/// Expands `~` and validates the directory typed into the new-window prompt.
+/// Expands `~` and creates the directory typed into the new-window prompt.
 /// An empty input (or plain `~`) resolves to the home directory.
 fn resolve_new_session_path(input: &str) -> std::result::Result<String, String> {
     let home = std::env::var("HOME").unwrap_or_default();
+    resolve_new_session_path_with_home(input, &home)
+}
+
+fn resolve_new_session_path_with_home(
+    input: &str,
+    home: &str,
+) -> std::result::Result<String, String> {
     let trimmed = input.trim();
     let expanded = if trimmed.is_empty() || trimmed == "~" {
-        home.clone()
+        home.to_string()
     } else if let Some(rest) = trimmed.strip_prefix("~/") {
         format!("{}/{}", home.trim_end_matches('/'), rest)
     } else {
@@ -1101,9 +1139,8 @@ fn resolve_new_session_path(input: &str) -> std::result::Result<String, String> 
     } else {
         path.to_path_buf()
     };
-    if !path.is_dir() {
-        return Err(format!("not a directory: {}", path.display()));
-    }
+    std::fs::create_dir_all(&path)
+        .map_err(|err| format!("could not create directory {}: {err}", path.display()))?;
     let path = path.canonicalize().unwrap_or(path);
     path.to_str()
         .map(|s| s.to_string())
@@ -1256,6 +1293,34 @@ mod tests {
         assert_eq!(complete_dir_path("", h).input, "~/");
         std::fs::remove_dir_all(home).unwrap();
     }
+
+    #[test]
+    fn name_suggests_wip_path_and_tab_resets_it_for_custom_input() {
+        let mut app = App::new();
+        app.start_new_session_prompt();
+        for c in "smarthome".chars() {
+            app.push_new_session_char(c);
+        }
+        assert_eq!(app.new_session_path, "~/wip/smarthome");
+
+        app.tab_new_session_field();
+        assert_eq!(app.new_session_path, "~/");
+        for c in "projects/other".chars() {
+            app.push_new_session_char(c);
+        }
+        assert_eq!(app.new_session_path, "~/projects/other");
+    }
+
+    #[test]
+    fn suggested_wip_path_is_created_when_resolved() {
+        let home = temp_home("new-window-path");
+        let home_str = home.to_str().unwrap();
+        let path = resolve_new_session_path_with_home("~/wip/smarthome", home_str).unwrap();
+        assert_eq!(path, home.join("wip/smarthome").to_str().unwrap());
+        assert!(home.join("wip/smarthome").is_dir());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
     fn dummy_pane() -> PaneInfo {
         PaneInfo {
             pane_id: "%1".to_string(),
